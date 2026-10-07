@@ -8,13 +8,16 @@ A missing grade is also a FLAG. Carbon steel with no grade uses the shop
 config grade (A36 unless changed) and still pushes. Any other family, or a
 drawing that does not name a family, is flagged and not given a grade.
 
-A bend callout (UP/DOWN, a bend angle, a bend radius, FORMED, BEND, a
-brake note, multiple views of a formed shape, a hem, or an offset/jog)
-does not go through as a flat laser plate. One or two 90° bends with a
-stated inside radius and one dimension convention (inside, outside, or
-mold-line) are developed from the press-brake chart, then sent through
-Image Files with Profile and Bend. Anything the chart cannot price is
-``FLAG: formed part`` before a quote is created.
+Bend count comes from the drawing text: an explicit count, UP/DOWN
+callouts, or bend-line labels. A flat plate with none of those is 0.
+Conflicting signals, a callout that does not give a number, a view-only
+shape, or a missing text layer is ``FLAG: bend count`` and is not guessed.
+One or two 90° bends with a stated inside radius and one dimension
+convention (inside, outside, or mold-line) are developed from the
+press-brake chart, then sent through Image Files with Profile and Bend.
+The count is on the line notes. More than two bends, a non-90° angle, or
+anything else the chart cannot price is ``FLAG: formed part`` before a
+quote is created.
 """
 
 from __future__ import annotations
@@ -304,11 +307,11 @@ def plan_pdf_only_part(
         if decision.flag:
             return PdfOnlyPlan(
                 route="refuse",
-                missing=("formed part",),
+                missing=(decision.flag_field,),
                 description=description,
                 material=None if grade.blocks else material,
                 thickness_in=float(thickness_in) if thickness_in is not None else None,
-                notes=_with_grade(grade, _flag("formed part", decision.flag)),
+                notes=_with_grade(grade, _flag(decision.flag_field, decision.flag)),
             )
         if grade.blocks:
             return _blocked_grade()
@@ -442,6 +445,7 @@ def plan_pdf_only_part(
             f"thickness {float(thickness_in):g} in; "
             f"L/W {float(width_in):g} x {float(length_in):g} in from the drawing"
         )
+        count_note = "bend count 0 from no bend callouts"
         return PdfOnlyPlan(
             route="image_files",
             description=description,
@@ -449,7 +453,9 @@ def plan_pdf_only_part(
             thickness_in=float(thickness_in),
             width_in=float(width_in),
             length_in=float(length_in),
-            notes=_with_grade(grade, note),
+            bend_count=0,
+            line_note=count_note,
+            notes=_with_grade(grade, note, count_note),
         )
 
     return PdfOnlyPlan(route="unclassified", description=description)
@@ -461,13 +467,26 @@ def plan_pdf_only_file(
     title: str = "",
     part_key: str = "",
 ) -> PdfOnlyPlan:
-    """Read one PDF. Unreadable bytes stay unclassified (no invented fields)."""
+    """Read one PDF. A missing text layer is a bend-count FLAG, not a guess of 0."""
     if path is None or not Path(path).is_file():
         return PdfOnlyPlan(route="unclassified")
     try:
         from quote_core.weight import _read_pdf_text
 
         text = _read_pdf_text(path) or ""
+        opened = True
     except Exception:  # noqa: BLE001 — corrupt test PDFs are not a stock callout
         text = ""
+        opened = False
+    if opened and not str(text).strip():
+        return PdfOnlyPlan(
+            route="refuse",
+            missing=("bend count",),
+            notes=(
+                _flag(
+                    "bend count",
+                    "text layer is missing; bend count was not guessed",
+                ),
+            ),
+        )
     return plan_pdf_only_part(text=text, title=title, part_key=part_key)

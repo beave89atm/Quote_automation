@@ -12,7 +12,9 @@ from pathlib import Path
 import pytest
 
 from secturafab.flat_pattern import (
+    BEND_OP_COUNT_FIELD,
     BendChartRow,
+    _extract_bend_count,
     allowance_and_deduction,
     chart_path,
     evaluate_formed,
@@ -40,6 +42,82 @@ BEND_DEDUCTION = 2.0 * (INSIDE_RADIUS + THICKNESS) - BEND_ALLOWANCE
 
 def _chart():
     return (FIXTURE_ROW,)
+
+
+def test_bend_counts_from_text_callouts():
+    none = _extract_bend_count("PLATE\n1/4\nA36\nPLATE SIZE 4.00 X 6.00")
+    one = _extract_bend_count("BEND UP 90 DEG")
+    two = _extract_bend_count("BEND UP 90 DEG\nBEND DOWN 90 DEG")
+    assert none.count == 0 and none.flag is None
+    assert none.source == "no bend callouts"
+    assert one.count == 1 and one.flag is None
+    assert one.source == "UP/DOWN callouts"
+    assert two.count == 2 and two.flag is None
+    assert two.source == "UP/DOWN callouts"
+    plan0 = plan_pdf_only_part(
+        text="PLATE\n1/4\nA36\nPLATE SIZE 4.00 X 6.00",
+        title="LIFT LOG GUSSET",
+    )
+    assert plan0.route == "image_files"
+    assert plan0.bend_count == 0
+    assert plan0.operations == ()
+    assert "bend count 0" in plan0.line_note
+
+
+def test_bend_line_labels_count_when_the_text_layer_names_them():
+    counted = _extract_bend_count("FRONT VIEW\nBEND LINE\nBEND LINE")
+    assert counted.count == 2
+    assert counted.source == "bend lines"
+    assert counted.flag is None
+
+
+def test_conflicting_bend_signals_flag_instead_of_guessing():
+    counted = _extract_bend_count("2 BENDS\nBEND UP 90 DEG")
+    assert counted.count is None
+    assert counted.flag is not None
+    assert "signals conflict" in counted.flag
+    plan = plan_pdf_only_part(
+        text="\n".join(
+            [
+                "PLATE",
+                "1/4",
+                "A36",
+                "PLATE SIZE 4.00 X 6.00",
+                "2 BENDS",
+                "BEND UP 90 DEG",
+            ]
+        ),
+        title="FORMED BRACKET",
+    )
+    assert plan.route == "refuse"
+    assert plan.bend_count is None
+    assert plan.notes[-1].startswith("FLAG: bend count — ")
+    assert "signals conflict" in plan.notes[-1]
+    assert "explicit count=2" in plan.notes[-1]
+    assert "UP/DOWN callouts=1" in plan.notes[-1]
+
+
+def test_missing_text_layer_flags_bend_count(tmp_path: Path):
+    import fitz
+
+    from secturafab.pdf_only import plan_pdf_only_file
+
+    pdf = tmp_path / "blank.pdf"
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(pdf)
+    doc.close()
+    plan = plan_pdf_only_file(pdf, title="BRACKET")
+    assert plan.route == "refuse"
+    assert plan.bend_count is None
+    assert plan.notes[-1].startswith("FLAG: bend count — ")
+    assert "text layer is missing" in plan.notes[-1]
+    assert "not guessed" in plan.notes[-1]
+
+
+def test_bend_count_is_not_written_into_an_invented_op_field():
+    """The Bend calculator has no count field this repo can set."""
+    assert BEND_OP_COUNT_FIELD is None
 
 
 def test_shipped_bend_chart_has_no_data_rows():

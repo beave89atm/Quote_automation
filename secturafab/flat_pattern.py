@@ -35,6 +35,8 @@ class BendRead:
     view_count: int = 0
     punch_radius_in: float | None = None
     die_opening_in: float | None = None
+    count_flag: str | None = None
+    count_source: str = ""
 
 
 _HEM_RE = re.compile(r"(?i)\bHEMS?\b")
@@ -43,8 +45,16 @@ _FORMED_RE = re.compile(r"(?i)\bFORMED\b")
 _BRAKE_RE = re.compile(r"(?i)\bBRAKE\b")
 _BEND_WORD_RE = re.compile(r"(?i)\bBENDS?\b")
 _UP_DOWN_RE = re.compile(r"(?i)(?<![A-Z0-9])(?:UP|DOWN)(?![A-Z0-9])")
-_BEND_DIR_RE = re.compile(r"(?i)\bBEND\s+(?:UP|DOWN)\b")
-_COUNT_RE = re.compile(r"(?i)\b(\d+)\s*BENDS?\b")
+_BEND_DIR_RE = re.compile(
+    r"(?i)\bBEND\s+(?:UP|DOWN)(?:\s+\d+(?:\.\d+)?\s*(?:°|DEG(?:REE)?S?))?|"
+    r"\b(?:UP|DOWN)\s+\d+(?:\.\d+)?\s*(?:°|DEG(?:REE)?S?)|"
+    r"\b\d+(?:\.\d+)?\s*(?:°|DEG(?:REE)?S?)\s+(?:UP|DOWN)\b"
+)
+_COUNT_RE = re.compile(
+    r"(?i)(?<!\.)\b(\d+)[ \t]+BENDS?\b(?![ \t]+LINES?\b)"
+)
+_BEND_LINE_COUNT_RE = re.compile(r"(?i)\b(\d+)\s+BEND\s+LINES?\b")
+_BEND_LINE_RE = re.compile(r"(?i)\bBEND\s+LINES?\b")
 _ANGLE_RE = re.compile(
     r"(?i)\b(\d+(?:\.\d+)?)\s*(?:°|DEG(?:REE)?S?)\b"
 )
@@ -123,6 +133,97 @@ def _unique_inches(values: list[float]) -> tuple[float | None, bool]:
     return first, False
 
 
+@dataclass(frozen=True)
+class BendCount:
+    """A bend count taken from the drawing, or a flag when it would be a guess."""
+
+    count: int | None = None
+    flag: str | None = None
+    source: str = ""
+
+
+# Captured Bend rows (q10488, q10504) are labeled FieldName "Number of Bends",
+# but Value, InitValue, and UnitTime on those rows are hours, and Quantity is
+# 1 on every sample. AddOperation in this repo writes a weld, not a bend.
+# There is no Bend-op field to set the count in, so the count stays on the line.
+BEND_OP_COUNT_FIELD = None
+
+
+def _bend_line_count(text: str) -> int | None:
+    """How many bend lines the text layer names. None when it names none."""
+    numbered = [int(match.group(1)) for match in _BEND_LINE_COUNT_RE.finditer(text)]
+    if numbered:
+        if len(set(numbered)) > 1:
+            return -1
+        return numbered[0]
+    bare = []
+    for match in _BEND_LINE_RE.finditer(text):
+        prefix = text[max(0, match.start() - 8):match.start()]
+        if re.search(r"\d+\s+$", prefix):
+            continue
+        bare.append(match)
+    if not bare:
+        return None
+    return len(bare)
+
+
+def _uncertain_count_reason(text: str) -> str:
+    if _UP_DOWN_RE.search(text):
+        return "UP/DOWN callout has no angle and no count"
+    if _ANGLE_RE.search(text):
+        return "a bend angle does not give a count"
+    if any(rx.search(text) for rx in _RADIUS_RES):
+        return "a bend radius does not give a count"
+    if _FORMED_RE.search(text):
+        return "FORMED does not give a count"
+    if _BRAKE_RE.search(text):
+        return "a press brake note does not give a count"
+    if _BEND_WORD_RE.search(text):
+        return "BEND does not give a count"
+    return "bend callout does not give a count"
+
+
+def _extract_bend_count(text: str) -> BendCount:
+    """Count bends from callouts and text-layer bend lines. Do not guess."""
+    explicit = [int(match.group(1)) for match in _COUNT_RE.finditer(text)]
+    directions = list(_BEND_DIR_RE.finditer(text))
+    bend_lines = _bend_line_count(text)
+    if explicit and len(set(explicit)) > 1:
+        return BendCount(flag="explicit bend counts disagree")
+    if bend_lines == -1:
+        return BendCount(flag="bend line counts disagree")
+    candidates: list[tuple[str, int]] = []
+    if explicit:
+        candidates.append(("explicit count", explicit[0]))
+    if directions:
+        candidates.append(("UP/DOWN callouts", len(directions)))
+    if bend_lines:
+        candidates.append(("bend lines", bend_lines))
+    if candidates:
+        counts = {count for _name, count in candidates}
+        if len(counts) != 1:
+            detail = ", ".join(f"{name}={count}" for name, count in candidates)
+            return BendCount(flag=f"signals conflict ({detail})")
+        source = " and ".join(name for name, _count in candidates)
+        return BendCount(count=candidates[0][1], source=source)
+    if len(_VIEW_RE.findall(text)) >= 2:
+        return BendCount(flag="view-only shape has no bend callouts")
+    if any(
+        (
+            _HEM_RE.search(text),
+            _OFFSET_RE.search(text),
+            _FORMED_RE.search(text),
+            _BRAKE_RE.search(text),
+            _BEND_WORD_RE.search(text),
+            _UP_DOWN_RE.search(text),
+            _ANGLE_RE.search(text),
+            any(rx.search(text) for rx in _RADIUS_RES),
+        )
+    ):
+        return BendCount(flag=_uncertain_count_reason(text))
+    return BendCount(count=0, source="no bend callouts")
+
+
 def read_bends(text: str) -> BendRead:
     """Parse bend callouts. Does not guess a radius, angle, or convention."""
     blob = str(text or "")
@@ -134,19 +235,7 @@ def read_bends(text: str) -> BendRead:
         if (value := _inches(match.group(1))) is not None
     ]
     radius, radius_ambiguous = _unique_inches(radii)
-    counts = [int(match.group(1)) for match in _COUNT_RE.finditer(blob)]
-    directions = _BEND_DIR_RE.findall(blob)
-    bend_count: int | None
-    if counts and len(set(counts)) > 1:
-        bend_count = -1
-    elif counts and directions and counts[0] != len(directions):
-        bend_count = -1
-    elif counts:
-        bend_count = counts[0]
-    elif directions:
-        bend_count = len(directions)
-    else:
-        bend_count = None
+    counted = _extract_bend_count(blob)
     conventions: list[str] = []
     for name, rx in _CONVENTION_RES:
         if rx.search(blob) and name not in conventions:
@@ -194,7 +283,7 @@ def read_bends(text: str) -> BendRead:
             bool(angles),
             radius is not None or radius_ambiguous,
             view_count >= 2,
-            bend_count is not None,
+            counted.count not in (None, 0),
         )
     )
     return BendRead(
@@ -205,7 +294,7 @@ def read_bends(text: str) -> BendRead:
         brake=brake,
         bend_word=bend_word,
         up_down=up_down,
-        bend_count=bend_count,
+        bend_count=counted.count,
         angles=angles,
         radius_in=radius,
         radius_ambiguous=radius_ambiguous,
@@ -215,6 +304,8 @@ def read_bends(text: str) -> BendRead:
         view_count=view_count,
         punch_radius_in=punch,
         die_opening_in=die,
+        count_flag=counted.flag,
+        count_source=counted.source,
     )
 
 
@@ -236,6 +327,7 @@ class FlatPattern:
     """A refuse reason, or a developed flat. ``flag`` None and no length means unused."""
 
     flag: str | None = None
+    flag_field: str = "formed part"
     developed_length_in: float | None = None
     width_in: float | None = None
     bend_count: int | None = None
@@ -392,14 +484,12 @@ def _blocking_reason(read: BendRead) -> str | None:
         return "offset/jog is not a simple bend"
     if read.bend_count is not None and read.bend_count > 2:
         return "more than two bends"
-    if read.bend_count == -1:
-        return "bend count is ambiguous"
     if read.angles and any(abs(angle - 90.0) > 0.01 for angle in read.angles):
         return "bend angle is not 90°"
+    if read.count_flag:
+        return None
     if read.radius_ambiguous:
         return "inside radius is ambiguous"
-    if read.view_count >= 2 and not _specifies_bend(read):
-        return "multiple views of a formed shape"
     if _specifies_bend(read) and read.radius_in is None:
         return "inside radius was not on the drawing"
     if len(read.conventions) > 1:
@@ -461,7 +551,7 @@ def _line_note(
         f"developed length {developed:.6g} in; "
         f"width {read.width_in:g} in; "
         f"ops Profile, Bend; "
-        f"bend count {read.bend_count}"
+        f"bend count {read.bend_count} from {read.count_source}"
     )
 
 
@@ -480,6 +570,14 @@ def evaluate_formed(
     deduction comes only from a chart row.
     """
     read = read_bends(text)
+    if read.hem:
+        return FlatPattern(flag="hem is not a simple bend")
+    if read.offset:
+        return FlatPattern(flag="offset/jog is not a simple bend")
+    if read.angles and any(abs(angle - 90.0) > 0.01 for angle in read.angles):
+        return FlatPattern(flag="bend angle is not 90°")
+    if read.count_flag:
+        return FlatPattern(flag=read.count_flag, flag_field="bend count")
     if not read.callout:
         return None
     blocked = _blocking_reason(read)

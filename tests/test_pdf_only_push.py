@@ -154,7 +154,10 @@ def test_pdf_plate_image_files_lands_gold_pack(tmp_path: Path, monkeypatch):
     stamped = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
     assert float(stamped["Thickness"]) == pytest.approx(PLATE_THICKNESS_IN)
     assert {float(stamped["Width"]), float(stamped["Length"])} == set(PLATE_FLATS)
+    assert "bend count 0" in (stamped.get("Notes") or "")
+    assert "BendCount" not in stamped
     blob = " ".join(result.notes or [])
+    assert "bend count 0" in blob
     assert "Image Files" in blob
     assert "FLAG:" not in blob
     assert "PR" in blob
@@ -520,20 +523,20 @@ def _formed_plate(*extra: str) -> str:
             ("1 BEND", "90 DEG", "INSIDE RADIUS 0.25", "LEG 2.00", "LEG 3.00", "WIDTH 6.00"),
             "dimension convention was not stated",
         ),
-        (("FRONT VIEW", "SIDE VIEW"), "multiple views of a formed shape"),
-        (("UP",), "UP/DOWN"),
-        (("90 DEG",), "bend angle"),
-        (("BEND RADIUS 0.25",), "bend radius"),
-        (("FORMED",), "FORMED"),
-        (("BEND",), "BEND"),
-        (("PRESS BRAKE",), "press brake"),
+        (("FRONT VIEW", "SIDE VIEW"), "view-only shape has no bend callouts"),
+        (("UP",), "UP/DOWN callout has no angle and no count"),
+        (("90 DEG",), "a bend angle does not give a count"),
+        (("BEND RADIUS 0.25",), "a bend radius does not give a count"),
+        (("FORMED",), "FORMED does not give a count"),
+        (("BEND",), "BEND does not give a count"),
+        (("PRESS BRAKE",), "a press brake note does not give a count"),
     ],
 )
 def test_pdf_bend_callout_flags_formed_part(extra: tuple[str, ...], reason: str):
     plan = plan_pdf_only_part(text=_formed_plate(*extra), title="LIFT LOG GUSSET")
     assert plan.route == "refuse"
-    assert plan.missing == ("formed part",)
-    assert plan.notes[-1].startswith("FLAG: formed part — ")
+    assert plan.missing[0] in {"formed part", "bend count"}
+    assert plan.notes[-1].startswith("FLAG:")
     assert reason in plan.notes[-1]
     assert "Image Files" not in " ".join(plan.notes)
 
@@ -544,7 +547,8 @@ def test_formed_callout_without_plate_noun_still_refuses():
         title="BRACKET",
     )
     assert plan.route == "refuse"
-    assert plan.notes[-1].startswith("FLAG: formed part — ")
+    assert plan.notes[-1].startswith("FLAG: bend count — ")
+    assert "FORMED does not give a count" in plan.notes[-1]
 
 
 def test_pdf_formed_part_stops_before_quote(tmp_path: Path, monkeypatch):
@@ -663,8 +667,8 @@ def test_pdf_one_bend_flat_feeds_image_files(tmp_path: Path, monkeypatch):
     stamped = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
     assert float(stamped["Length"]) == pytest.approx(developed)
     assert float(stamped["Width"]) == pytest.approx(6.0)
-    assert stamped["Operations"] == "Profile,Bend"
-    assert stamped["BendCount"] == 1
+    assert "BendCount" not in stamped
+    assert "Quantity" not in stamped
     note = stamped["Notes"]
     assert "legs 2, 3 in" in note
     assert "convention inside" in note

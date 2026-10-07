@@ -5143,9 +5143,6 @@ class SecturaFabPushService:
                 if line_note:
                     stamp_row["Notes"] = line_note
                     stamp_row["Memo"] = line_note
-                if bend_count:
-                    stamp_row["BendCount"] = int(bend_count)
-                    stamp_row["Operations"] = "Profile,Bend"
                 stamp_rows.append(stamp_row)
             else:
                 missing = []
@@ -5159,7 +5156,7 @@ class SecturaFabPushService:
                 )
         if line_note and line_note not in notes:
             notes.append(line_note)
-        if bend_count:
+        if bend_count is not None and int(bend_count) > 0:
             bend_note = f"Bend op with Profile; bend count {int(bend_count)}"
             if bend_note not in notes:
                 notes.append(bend_note)
@@ -7661,14 +7658,12 @@ class SecturaFabPushService:
                                 ),
                                 line_note=(
                                     pdf_only_plan.line_note
-                                    if pdf_only_plan is not None
-                                    and pdf_only_plan.flats_from_chart
+                                    if pdf_only_plan is not None and pdf_only_plan.line_note
                                     else None
                                 ),
                                 bend_count=(
                                     pdf_only_plan.bend_count
                                     if pdf_only_plan is not None
-                                    and pdf_only_plan.flats_from_chart
                                     else None
                                 ),
                             )
