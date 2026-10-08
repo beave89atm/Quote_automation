@@ -2,6 +2,12 @@
 
 The detector loads `quote_core/bend_conventions.yaml`. Each bend it accepts cites the convention id that matched. High-confidence signals can set the count. Medium signals count only when they agree with that count. Low-confidence signals and conflicts stop the quote with `FLAG: bend count — <reason>`. Nothing is guessed.
 
+## STEP wins
+
+A STEP file is the bend count and the flat pattern for that part. SecturaFAB unfolds the STEP, and that result is what the quote uses.
+
+Reading bends off the PDF is only a fallback for a PDF-only quote: no usable STEP for that part. If a STEP is present, the PDF reader does not run. Its flags do not run either. It does not replace the STEP bend count, it does not replace the STEP flat pattern, and it does not stop the quote. A PDF count that does not match the STEP can be written in the notes as a warning. That warning is not a flag and it does not block the push. The push does not run the reader just to make that note. The STEP count comes from SecturaFAB after the file is unfolded, and the PDF is not consulted for it.
+
 ## What changed for a real drawing
 
 These are the rules the reader uses now.
@@ -19,7 +25,7 @@ These are the rules the reader uses now.
 
 `detect_bends(text, drawings)` is unchanged. An optional `text_blocks` argument can carry each PDF span's `text`, `dir`, and `bbox`. The push path keeps one block per span so a stacked fraction is not joined into one line. The direction the note is written does not change the bend plane. A centerline counts only when one of those notes sits on it. Notes sitting on lines about 90° apart are not one plane. Short-dash lines count the same way when a note sits on them.
 
-The flat length is not a bend count. A printed flat size wins. The formula in `secturafab/flat_formula.py` is the fallback. See `docs/flat_pattern_formulas.md`. K is `materials.flat_pattern_k_factor` in `config/shop_rates.yaml` (0.33).
+The flat length is not a bend count. On a PDF-only quote, a printed flat size wins over the formula. When the part has a STEP, the STEP flat pattern wins and this reader does not replace it. The formula in `secturafab/flat_formula.py` is the PDF-only fallback when the sheet did not print a clear blank. See `docs/flat_pattern_formulas.md`. K is `materials.flat_pattern_k_factor` in `config/shop_rates.yaml` (0.33).
 
 ## What is text-only
 
