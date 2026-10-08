@@ -3,9 +3,9 @@
 Text conventions live in ``bend_conventions.yaml``. Geometry conventions in
 that file describe PyMuPDF dash patterns (center and phantom). Hidden-line
 dashes and solid strokes are not bend lines. A PDF does not carry the CAD
-layer name, so a dash pattern is only corroboration: it counts when it
-agrees with the text count, and it flags when it disagrees or when it is
-the only evidence.
+layer name, so a dash pattern only corroborates a bend the text already
+named. Hole and symmetry centerlines do not create a bend, do not disagree
+with the text count, and do not by themselves say the bends are in two planes.
 """
 
 from __future__ import annotations
@@ -106,12 +106,59 @@ def convention_ids() -> tuple[str, ...]:
     return tuple(item.id for item in load_conventions())
 
 
+_PAREN_BEND_LINE_RE = re.compile(r"(?i)\(\s*BEND\s+LINES?\s*\)")
+_STACK_NUM_RE = re.compile(r"^(\d{1,2})$")
+_STACK_DEN_RE = re.compile(r"^(\d{1,2})(.*)$")
+_STACK_DENS = {2, 4, 8, 16, 32, 64}
+_STACK_REST_RE = re.compile(r"(?i)^\s*BENDS?(?:\s+RAD(?:IUS)?)?\s*$")
+
+
+def normalize_stacked_fractions(text: str) -> str:
+    """Join a stacked inch fraction so ``1`` / ``4 BEND RADIUS`` is not ``4 BENDS``."""
+    lines = str(text or "").splitlines()
+    out: list[str] = []
+    index = 0
+    while index < len(lines):
+        current = lines[index].strip()
+        num_match = _STACK_NUM_RE.fullmatch(current)
+        if num_match and index + 1 < len(lines):
+            numerator = int(num_match.group(1))
+            nxt = lines[index + 1].strip()
+            den_match = _STACK_DEN_RE.fullmatch(nxt)
+            if den_match:
+                denominator = int(den_match.group(1))
+                rest = den_match.group(2)
+                if (
+                    denominator in _STACK_DENS
+                    and 0 < numerator < denominator
+                    and _STACK_REST_RE.match(rest)
+                ):
+                    out.append(f"{numerator}/{denominator}{rest}")
+                    index += 2
+                    continue
+            if (
+                _STACK_NUM_RE.fullmatch(nxt)
+                and index + 2 < len(lines)
+                and _STACK_REST_RE.match(lines[index + 2].strip())
+            ):
+                denominator = int(nxt)
+                if denominator in _STACK_DENS and 0 < numerator < denominator:
+                    out.append(f"{numerator}/{denominator} {lines[index + 2].strip()}")
+                    index += 3
+                    continue
+        out.append(lines[index])
+        index += 1
+    return "\n".join(out)
+
+
 def mask_false_positives(text: str, conventions: tuple[Convention, ...] | None = None) -> str:
     """Blank lines that are edge breaks, chamfers, countersinks, or title words."""
     library = conventions if conventions is not None else load_conventions()
     patterns = [item.pattern for item in library if item.role == "false_positive" and item.pattern]
+    normalized = normalize_stacked_fractions(text)
+    normalized = _PAREN_BEND_LINE_RE.sub(lambda match: " " * len(match.group(0)), normalized)
     kept: list[str] = []
-    for line in str(text or "").splitlines():
+    for line in normalized.splitlines():
         if any(pattern.search(line) for pattern in patterns):
             kept.append(" " * len(line))
         else:
@@ -221,10 +268,102 @@ def _segment(item: Any) -> tuple[tuple[float, float], tuple[float, float]] | Non
             return None
 
 
-def _geometry(drawings: list[dict[str, Any]] | None) -> tuple[int | None, bool, tuple[str, ...]]:
-    """Long center/phantom lines. Returns (count or None, perpendicular, style ids)."""
+_NOTE_AXIS_RE = re.compile(
+    r"(?i)(?<![A-Z0-9])(?:UP|DOWN)[ \t]+\d|\bBEND[ \t]+(?:UP|DOWN)\b"
+)
+_DASH_BEND_RE = re.compile(r"(?i)(?:^|[\s(])[-–—]\s*(\d+)\s+BEND\b")
+
+
+def _point_segment_distance(
+    px: float,
+    py: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+) -> float:
+    dx, dy = x2 - x1, y2 - y1
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 0:
+        return math.hypot(px - x1, py - y1)
+    ratio = ((px - x1) * dx + (py - y1) * dy) / length_sq
+    ratio = max(0.0, min(1.0, ratio))
+    return math.hypot(px - (x1 + ratio * dx), py - (y1 + ratio * dy))
+
+
+def _note_anchors(
+    text_blocks: list[dict[str, Any]] | None,
+) -> list[tuple[float, float]] | None:
+    """Centers of bend-note text, or None when positions were not supplied.
+
+    None means "do not filter". An empty list means positions exist and no
+    bend note is sitting on a line, so no line is bend geometry.
+    """
+    if not text_blocks:
+        return None
+    anchors: list[tuple[float, float]] = []
+    saw_box = False
+    for block in text_blocks:
+        if not isinstance(block, dict):
+            continue
+        bbox = block.get("bbox")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+            continue
+        saw_box = True
+        if not _NOTE_AXIS_RE.search(str(block.get("text") or "")):
+            continue
+        try:
+            x0, y0, x1, y1 = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        except (TypeError, ValueError):
+            continue
+        anchors.append(((x0 + x1) / 2.0, (y0 + y1) / 2.0))
+    if not saw_box:
+        return None
+    return anchors
+
+
+def _text_note_plane(text_blocks: list[dict[str, Any]] | None) -> bool:
+    """True when bend notes themselves are written on both axes."""
+    if not text_blocks:
+        return False
+    axes: set[str] = set()
+    for block in text_blocks:
+        if not isinstance(block, dict):
+            continue
+        if not _NOTE_AXIS_RE.search(str(block.get("text") or "")):
+            continue
+        direction = block.get("dir") or (1.0, 0.0)
+        try:
+            dx, dy = float(direction[0]), float(direction[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        angle = math.degrees(math.atan2(dy, dx)) % 180.0
+        if _undirected_delta(angle, 0.0) <= 20.0:
+            axes.add("horizontal")
+        elif _undirected_delta(angle, 90.0) <= 20.0:
+            axes.add("vertical")
+    return "horizontal" in axes and "vertical" in axes
+
+
+def _dash_option_flag(text: str) -> str | None:
+    """``-1 BEND`` and ``-2 BEND`` are separate dash options, not one count."""
+    dashes = {match.group(1) for match in _DASH_BEND_RE.finditer(text)}
+    if len(dashes) >= 2:
+        return "dash bend notes are separate options, not one bend count"
+    return None
+
+
+def _geometry(
+    drawings: list[dict[str, Any]] | None,
+    anchors: list[tuple[float, float]] | None = None,
+) -> tuple[int | None, bool, tuple[str, ...], int]:
+    """Long center/phantom lines.
+
+    Returns (dominant count or None, perpendicular, style ids, total lines).
+    When ``anchors`` is a list, a line counts only if a bend note sits near it.
+    """
     if not drawings:
-        return None, False, ()
+        return None, False, (), 0
     seen: set[tuple[tuple[int, int], tuple[int, int]]] = set()
     lines: list[tuple[float, str]] = []
     for drawing in drawings:
@@ -239,6 +378,11 @@ def _geometry(drawings: list[dict[str, Any]] | None) -> tuple[int | None, bool, 
             if seg is None:
                 continue
             (x1, y1), (x2, y2) = seg
+            if anchors is not None and not any(
+                _point_segment_distance(px, py, x1, y1, x2, y2) <= 48.0
+                for px, py in anchors
+            ):
+                continue
             key = tuple(sorted(((round(x1, 1), round(y1, 1)), (round(x2, 1), round(y2, 1)))))
             if key in seen:
                 continue
@@ -249,7 +393,7 @@ def _geometry(drawings: list[dict[str, Any]] | None) -> tuple[int | None, bool, 
             angle = math.degrees(math.atan2(y2 - y1, x2 - x1)) % 180.0
             lines.append((angle, style_id))
     if not lines:
-        return None, False, ()
+        return None, False, (), 0
     families: list[list[tuple[float, str]]] = []
     for angle, style_id in lines:
         placed = False
@@ -268,7 +412,7 @@ def _geometry(drawings: list[dict[str, Any]] | None) -> tuple[int | None, bool, 
         if _near_perpendicular(dominant[0][0], other[0][0]):
             perpendicular = True
             break
-    return len(dominant), perpendicular, styles
+    return len(dominant), perpendicular, styles, len(lines)
 
 
 def _undirected_delta(left: float, right: float) -> float:
@@ -315,12 +459,32 @@ def detect_bends(
     *,
     already_masked: bool = False,
     conventions: tuple[Convention, ...] | None = None,
+    text_blocks: list[dict[str, Any]] | None = None,
 ) -> BendDetection:
-    """Count bends. Low confidence and conflicts flag. Nothing is guessed."""
+    """Count bends. Low confidence and conflicts flag. Nothing is guessed.
+
+    ``text_blocks`` is optional. Each item may carry ``text``, ``dir``
+    ``(dx, dy)``, and ``bbox`` ``(x0, y0, x1, y1)`` from the PDF text layer.
+    A centerline counts only when a bend note sits on it. Note direction is
+    text evidence: horizontal and vertical bend notes are not one plane.
+    Geometry never creates a bend and never overrides the text count.
+    """
     library = conventions if conventions is not None else load_conventions()
     blob = text if already_masked else mask_false_positives(text, library)
-    geom_count, perpendicular, geom_styles = _geometry(drawings)
-    plane = _plane_flag(blob, library, perpendicular)
+    anchors = _note_anchors(text_blocks)
+    geom_count, perpendicular, geom_styles, geom_total = _geometry(drawings, anchors)
+    plane = _plane_flag(blob, library, False)
+    if plane is None and _text_note_plane(text_blocks):
+        plane = "bends are not in a single plane"
+    dash_flag = _dash_option_flag(blob)
+    if dash_flag:
+        return BendDetection(
+            count=None,
+            flag=dash_flag,
+            bends=(),
+            plane_flag=plane,
+            geometry_count=geom_count,
+        )
     occupied: list[tuple[int, int]] = []
     explicit: list[_Hit] = []
     each: list[tuple[_Hit, int]] = []
@@ -383,14 +547,9 @@ def detect_bends(
         ident = table[0].convention_id
         groups.append((ident, len(table), _bends_for(table, ident, "high", len(table))))
 
-    text_groups = groups
-    if geom_count is not None:
-        style = geom_styles[0] if geom_styles else "geom_center_line"
-        text_groups = [*groups, (style, geom_count, _bends_for([], style, "medium", geom_count))]
-
-    counts = {count for _label, count, _bends in text_groups}
+    counts = {count for _label, count, _bends in groups}
     if len(counts) > 1:
-        detail = ", ".join(f"{label}={count}" for label, count, _bends in text_groups)
+        detail = ", ".join(f"{label}={count}" for label, count, _bends in groups)
         return BendDetection(
             count=None,
             flag=f"signals conflict ({detail})",
@@ -402,8 +561,21 @@ def detect_bends(
         count = groups[0][1]
         bends = list(groups[0][2])
         extra = tuple(dict.fromkeys(label for label, _count, _bends in groups[1:]))
+        # Geometry corroborates a text count. It does not add one and it does
+        # not disagree. A perpendicular flag needs the lines to be the bends.
         if geom_count is not None and geom_count == count:
             extra = tuple(dict.fromkeys((*extra, *geom_styles)))
+        if (
+            plane is None
+            and perpendicular
+            and geom_total == count
+            and count > 0
+        ):
+            geom = next(
+                (item for item in library if item.id == "geom_perpendicular_families"),
+                None,
+            )
+            plane = geom.flag if geom and geom.flag else "bends are not in a single plane"
         if extra:
             bends = [
                 DetectedBend(
@@ -418,14 +590,6 @@ def detect_bends(
             count=count,
             flag=None,
             bends=tuple(bends),
-            plane_flag=plane,
-            geometry_count=geom_count,
-        )
-    if geom_count is not None:
-        return BendDetection(
-            count=None,
-            flag="center or phantom lines are not a bend count without a callout",
-            bends=(),
             plane_flag=plane,
             geometry_count=geom_count,
         )

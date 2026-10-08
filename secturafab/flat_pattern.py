@@ -1,9 +1,10 @@
-"""PDF-only bend callouts and Kyle's flat-pattern formula.
+"""PDF-only bend callouts and the flat blank.
 
-The bend count comes from ``quote_core/bend_conventions.yaml``. The flat
-length comes from ``secturafab/flat_formula.py``. K is the shop setting
-``materials.flat_pattern_k_factor`` (0.33). The flat width is the drawing
-width. A constant-width part with parallel bends is a rectangular blank.
+The bend count comes from ``quote_core/bend_conventions.yaml``. When the
+drawing prints a flat-pattern size, that size is the blank and the source
+is ``drawing flat pattern``. Otherwise the length comes from
+``secturafab/flat_formula.py`` when the legs, thickness, and radius are all
+readable. K is the shop setting ``materials.flat_pattern_k_factor`` (0.33).
 """
 
 from __future__ import annotations
@@ -59,7 +60,11 @@ _OFFSET_LEN_RE = re.compile(
 _ROLL_RE = re.compile(
     r"(?i)\b(?:ROLL\s+FORM(?:ED|ING)?|ROLLED\s+(?:SECTION|SHAPE|PART)|LARGE\s+RADIUS)\b"
 )
-_CONE_RE = re.compile(r"(?i)\b(?:CONES?|CONICAL|CYLINDERS?|CYLINDRICAL)\b")
+# A bare CYLINDER is a form. MASTER CYLINDER, and any other word in front
+# of CYLINDER, is a part name.
+_CONE_RE = re.compile(
+    r"(?i)\b(?:CONES?|CONICAL|CYLINDRICAL)\b|(?<![A-Za-z][ \t])\bCYLINDERS?\b"
+)
 _STRETCH_RE = re.compile(
     r"(?i)\b(?:STRETCHED(?:\s+FORM)?|STRETCH\s+FORM|COMPOUND\s+FORM)\b"
 )
@@ -67,13 +72,34 @@ _UNFOLD_RE = re.compile(
     r"(?i)\b(?:NON[-\s]?PARALLEL|NOT\s+PARALLEL|BOX\s+BENDS?|BENDS?\s+BOX)\b"
 )
 _BENDISH_RE = re.compile(r"(?i)\b(?:BENDS?|UP|DOWN)\b")
-_R_TOKEN_RE = re.compile(r"(?i)(?<![A-Z])R\s*\.?\s*(\d+(?:\.\d+)?)")
+# R.13 = 0.13, R .25 = 0.25, R 3/8 = 0.375, R1/2 = 0.5, R1.5 and R1,5 stay.
+_R_TOKEN_RE = re.compile(
+    r"(?i)(?<![A-Z0-9])R[ \t]*"
+    r"(?:(\d{1,2})[ \t]*/[ \t]*(\d{1,2})|(\.\d+)|(\d+(?:[.,]\d+)?))"
+)
 _FORMED_RE = re.compile(r"(?i)\bFORMED\b")
 _BRAKE_RE = re.compile(r"(?i)\bBRAKE\b")
 _BEND_WORD_RE = re.compile(r"(?i)\bBENDS?\b")
 _UP_DOWN_RE = re.compile(r"(?i)(?<![A-Z0-9])(?:UP|DOWN)(?![A-Z0-9])")
+# No word boundary after °. ° is not a word character, so °\b never matches.
 _ANGLE_RE = re.compile(
-    r"(?i)\b(\d+(?:\.\d+)?)\s*(?:°|DEG(?:REE)?S?)\b"
+    r"(?i)(?<![A-Z0-9.])(\d+(?:\.\d+)?)\s*(?:°|º|˚|DEG(?:REE)?S?\b)"
+)
+_BEND_NOTE_LINE_RE = re.compile(
+    r"(?i)(?<![A-Z0-9])(?:UP|DOWN)(?![A-Z0-9])|\bBENDS?\b"
+)
+_FORMED_EVIDENCE_RE = re.compile(
+    r"(?i)\bFLAT\s+PATTERN\b|\bDEVELOPED\s+(?:VIEW|BLANK|LENGTH)\b|\bFORMED\b"
+)
+_FLAT_LABEL_RE = re.compile(
+    r"(?i)\b(?:FLAT\s+PATTERN(?:\s+VIEW)?|DEVELOPED(?:\s+(?:VIEW|BLANK|LENGTH))?|"
+    r"FLAT\s+(?:SIZE|BLANK|LAYOUT))\b"
+)
+_FLAT_PAIR_RE = re.compile(
+    r"(?i)(?<![\d.])"
+    r"(\d+\s*-\s*\d+\s*/\s*\d+|\d+\s+\d+\s*/\s*\d+|\d+\s*/\s*\d+|\d+\.\d+|\.\d+|\d+)"
+    r"\s*[\"″]?\s*[xX×]\s*"
+    r"(\d+\s*-\s*\d+\s*/\s*\d+|\d+\s+\d+\s*/\s*\d+|\d+\s*/\s*\d+|\d+\.\d+|\.\d+|\d+)"
 )
 _VIEW_RE = re.compile(
     r"(?i)\b(?:FRONT|SIDE|TOP|BOTTOM|LEFT|RIGHT|ISO|FORMED|FLAT)\s+VIEW\b"
@@ -84,18 +110,17 @@ _LEG_RE = re.compile(
 _WIDTH_RE = re.compile(
     r"(?i)\bWIDTH\s+([0-9]+(?:\s*[- ]\s*[0-9]+\s*/\s*[0-9]+|\s*/\s*[0-9]+|\.\d+)?)"
 )
+_INCH_TOKEN = (
+    r"(\d+\s*[- ]\s*\d+\s*/\s*\d+|\d+\s*/\s*\d+|\d+\.\d+|\.\d+|\d+)"
+)
 _RADIUS_RES = (
+    re.compile(rf"(?i)\bINSIDE\s+RADIUS\s+{_INCH_TOKEN}"),
+    re.compile(rf"(?i)\bBEND\s+RAD(?:IUS)?\s*[.:\s]+{_INCH_TOKEN}"),
+    re.compile(rf"(?i){_INCH_TOKEN}\s+BEND\s+RAD(?:IUS)?\b"),
+    re.compile(rf"(?i)\bIR\s*[:=]?\s*{_INCH_TOKEN}"),
     re.compile(
-        r"(?i)\bINSIDE\s+RADIUS\s+"
-        r"([0-9]+(?:\s*[- ]\s*[0-9]+\s*/\s*[0-9]+|\s*/\s*[0-9]+|\.\d+)?)"
-    ),
-    re.compile(
-        r"(?i)\bBEND\s+RADIUS\s+"
-        r"([0-9]+(?:\s*[- ]\s*[0-9]+\s*/\s*[0-9]+|\s*/\s*[0-9]+|\.\d+)?)"
-    ),
-    re.compile(
-        r"(?i)\bIR\s*[:=]?\s*"
-        r"([0-9]+(?:\s*[- ]\s*[0-9]+\s*/\s*[0-9]+|\s*/\s*[0-9]+|\.\d+)?)"
+        r"(?i)(?<![A-Z0-9])R[ \t]*(\.\d+|\d{1,2}[ \t]*/[ \t]*\d{1,2}|\d+(?:[.,]\d+)?)"
+        r"[ \t]+TYP\b"
     ),
 )
 _CONVENTION_RES: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -133,10 +158,25 @@ def _inches(token: str | None) -> float | None:
         if den == 0:
             return None
         return num / den
-    plain = re.fullmatch(r"\d+(?:\.\d+)?", text)
+    plain = re.fullmatch(r"\d+(?:\.\d+)?|\.\d+", text)
     if plain:
-        return float(plain.group(0))
+        return float(plain.group(0).replace(",", "."))
     return None
+
+
+def _r_token_inches(match: re.Match[str]) -> float | None:
+    """One R token. The leading decimal stays in front of the digits."""
+    if match.group(1) and match.group(2):
+        denominator = float(match.group(2))
+        if denominator == 0:
+            return None
+        return float(match.group(1)) / denominator
+    if match.group(3):
+        return float(match.group(3))
+    raw = match.group(4)
+    if not raw:
+        return None
+    return _inches(raw.replace(",", "."))
 
 
 def _unique_inches(values: list[float]) -> tuple[float | None, bool]:
@@ -198,14 +238,46 @@ def _assign_thetas(
 
 
 def _read_angles(text: str, bend_count: int | None) -> tuple[tuple[float, ...], str | None]:
-    found: list[float] = []
+    """θ from bend notes. A tolerance or chamfer on another line is not θ.
+
+    Included angle still counts when the bend note itself has no degrees.
+    A bare non-90° is ambiguous only when no bend note stated an angle.
+    """
+    callout: list[float] = []
+    included: list[float] = []
+    stray: list[float] = []
+    stray_flag: str | None = None
     for raw in text.splitlines():
-        theta, flag = _theta_from_line(raw)
+        line = raw.strip()
+        if not line:
+            continue
+        bend_note = bool(_BEND_NOTE_LINE_RE.search(line))
+        if bend_note:
+            theta, flag = _theta_from_line(line)
+            if flag:
+                return (), flag
+            if theta is not None:
+                callout.append(theta)
+            continue
+        if _INCLUDED_ANGLE_RE.search(line):
+            theta, flag = _theta_from_line(line)
+            if flag:
+                return (), flag
+            if theta is not None:
+                included.append(theta)
+            continue
+        theta, flag = _theta_from_line(line)
         if flag:
-            return (), flag
-        if theta is not None:
-            found.append(theta)
-    return _assign_thetas(found, bend_count)
+            stray_flag = flag
+        elif theta is not None:
+            stray.append(theta)
+    if callout:
+        return _assign_thetas(callout, bend_count)
+    if included:
+        return _assign_thetas(included, bend_count)
+    if stray_flag:
+        return (), stray_flag
+    return _assign_thetas(stray, bend_count)
 
 
 def _per_bend_radii(text: str) -> list[float]:
@@ -215,7 +287,7 @@ def _per_bend_radii(text: str) -> list[float]:
         if not _BENDISH_RE.search(raw):
             continue
         for match in _R_TOKEN_RE.finditer(raw):
-            value = _inches(match.group(1))
+            value = _r_token_inches(match)
             if value is not None:
                 found.append(value)
     return found
@@ -298,18 +370,31 @@ def _extract_bend_count(text: str) -> BendCount:
     return BendCount(count=0 if found.count is None else found.count, source=source)
 
 
-def read_bends(text: str, drawings: list | None = None) -> BendRead:
-    """Parse bend callouts. Does not guess a radius, angle, or convention."""
+def read_bends(
+    text: str,
+    drawings: list | None = None,
+    text_blocks: list | None = None,
+) -> BendRead:
+    """Parse bend callouts. Does not guess a radius, angle, or convention.
+
+    ``text_blocks`` is the optional PDF text layer (``text``, ``dir``, ``bbox``).
+    Geometry uses it only to corroborate a bend note. See ``detect_bends``.
+    """
     from quote_core.bend_conventions import detect_bends, mask_false_positives
 
     blob = mask_false_positives(str(text or ""))
-    detection = detect_bends(blob, drawings, already_masked=True)
+    detection = detect_bends(
+        blob,
+        drawings,
+        already_masked=True,
+        text_blocks=text_blocks,
+    )
     angles = tuple(float(match.group(1)) for match in _ANGLE_RE.finditer(blob))
     radii = [
         value
         for rx in _RADIUS_RES
         for match in rx.finditer(blob)
-        if (value := _inches(match.group(1))) is not None
+        if (value := _inches(match.group(1).replace(",", "."))) is not None
     ]
     radius, radius_ambiguous = _unique_inches(radii)
     counted = BendCount(
@@ -435,6 +520,9 @@ class FlatPattern:
     bend_count: int | None = None
     line_note: str = ""
     operations: tuple[str, ...] = ()
+    # ``drawing flat pattern`` when the sheet prints the blank. ``formula``
+    # when legs, thickness, and radius were readable and the formula ran.
+    length_source: str = ""
 
 
 def _callout_label(read: BendRead) -> str:
@@ -519,10 +607,62 @@ def _line_note(
     )
 
 
+def _drawing_flat_pair(text: str) -> tuple[float, float] | None:
+    """Overall blank printed on a FLAT PATTERN / FLAT / DEVELOPED view.
+
+    The pair is used in the order printed. None when the view is missing,
+    the pair is missing, or more than one pair is printed.
+    """
+    from .item_desc import looks_like_drawing_sheet, looks_like_page_outline
+
+    lines = str(text or "").splitlines()
+    found: list[tuple[float, float]] = []
+    for index, line in enumerate(lines):
+        if not _FLAT_LABEL_RE.search(line):
+            continue
+        window = "\n".join(lines[max(0, index - 4) : index + 8])
+        for match in _FLAT_PAIR_RE.finditer(window):
+            width = _inches(match.group(1))
+            length = _inches(match.group(2))
+            if width is None or length is None:
+                continue
+            if width <= 0.25 or length <= 0.25 or max(width, length) > 240:
+                continue
+            if looks_like_drawing_sheet(width, length) or looks_like_page_outline(width, length):
+                continue
+            pair = (width, length)
+            if not any(abs(pair[0] - old[0]) <= 0.0005 and abs(pair[1] - old[1]) <= 0.0005 for old in found):
+                found.append(pair)
+    if len(found) != 1:
+        return None
+    return found[0]
+
+
+def _drawing_flat_note(read: BendRead, width: float, length: float) -> str:
+    cites = ", ".join(read.citations) or read.count_source or "bend notes"
+    return (
+        "flat pattern: source drawing flat pattern; "
+        f"flat {width:g} x {length:g} in; "
+        f"Bend NumberOfBends = {read.bend_count} "
+        f"({cites})"
+    )
+
+
 def _positive_length(value: float) -> float | None:
     if value <= 0 or value != value or value == float("inf"):
         return None
     return value
+
+
+def _has_formed_evidence(read: BendRead, text: str) -> bool:
+    """True when the text says the part is formed, even if the count is missing."""
+    if read.callout or read.formed_word or read.bend_word or read.up_down:
+        return True
+    if read.count_flag or read.plane_flag:
+        return True
+    if read.bend_count not in (None, 0):
+        return True
+    return bool(_FORMED_EVIDENCE_RE.search(text or ""))
 
 
 def evaluate_formed(
@@ -530,15 +670,21 @@ def evaluate_formed(
     *,
     thickness_in: float | None,
     drawings: list | None = None,
+    text_blocks: list | None = None,
 ) -> FlatPattern | None:
     """None when the drawing is a flat plate. Otherwise a flag or a developed flat.
 
-    Hems, rolled sections, cones, compound forms, nonparallel bends, a
-    missing radius, an unclear angle, and an inside or mixed dimension
-    chain are flagged before the formula runs. A stated bend angle of any
-    size is allowed. θ is the change from flat.
+    A printed FLAT PATTERN size is the blank. Kyle's formula runs only when
+    that size is not printed and the legs, thickness, and radius are all
+    readable. Hems, rolled sections, cones, compound forms, nonparallel
+    bends, a missing radius, an unclear angle, and an inside or mixed
+    dimension chain are flagged before the formula runs. A stated bend
+    angle of any size is allowed. θ is the change from flat.
+
+    Formed evidence with a bend count of 0 or unknown is a flag. It is not
+    a flat plate.
     """
-    read = read_bends(text, drawings)
+    read = read_bends(text, drawings, text_blocks=text_blocks)
     if read.hem:
         return FlatPattern(flag="hem is not a simple bend")
     if read.roll:
@@ -555,8 +701,25 @@ def evaluate_formed(
         return FlatPattern(flag="offset/jog is not dimensioned")
     if read.count_flag:
         return FlatPattern(flag=read.count_flag, flag_field="bend count")
+    if read.bend_count in (None, 0) and _has_formed_evidence(read, text):
+        return FlatPattern(
+            flag="formed evidence but the bend count is 0 or unknown",
+        )
     if not read.callout:
         return None
+    printed = _drawing_flat_pair(text) if read.bend_count and read.bend_count > 0 else None
+    if printed is not None:
+        if thickness_in is None:
+            return FlatPattern(flag="thickness was not on the drawing")
+        width, length = printed
+        return FlatPattern(
+            developed_length_in=length,
+            width_in=width,
+            bend_count=int(read.bend_count or 0),
+            line_note=_drawing_flat_note(read, width, length),
+            operations=("Profile", "Bend"),
+            length_source="drawing flat pattern",
+        )
     if read.angle_flag:
         return FlatPattern(flag=read.angle_flag)
     if read.radius_flag:
@@ -615,6 +778,7 @@ def evaluate_formed(
             k_factor=k_factor,
         ),
         operations=("Profile", "Bend"),
+        length_source="formula",
     )
 
 

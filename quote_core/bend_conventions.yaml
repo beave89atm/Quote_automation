@@ -6,8 +6,11 @@
 # role: false_positive | explicit_count | count_each | multiplier | table_row
 #       | shared_note | insufficient | view_tally | not_single_plane | axis
 #       | geometry
+#
+# Geometry never creates a bend and never overrides a text count. A long
+# center or phantom line can only corroborate a bend the text already named.
 
-version: 1
+version: 2
 
 conventions:
   - id: fp_break_sharp_edges
@@ -36,6 +39,15 @@ conventions:
     role: false_positive
     pattern: '(?i)\bBENDABLE\b|\bBENDERS?\b|\bUNBEND\b'
     note: Title words that contain BEND. Not a bend callout.
+
+  - id: fp_title_bend_angle
+    confidence: ignore
+    layer: text
+    role: false_positive
+    pattern: '(?i)\bBEND\s+ANGLE\s*=|\bANGULAR\s*:'
+    note: >
+      Title-block default (BEND ANGLE = 90°) and angular tolerance
+      (ANGULAR: BEND 1°). Not a bend count and not a bend angle.
 
   - id: not_single_plane_note
     confidence: high
@@ -73,15 +85,15 @@ conventions:
     confidence: high
     layer: text
     role: explicit_count
-    pattern: '(?i)(?<!\.)\b(\d+)[ \t]+BENDS?\b(?![ \t]+LINES?\b)'
-    note: "N BEND or N BENDS. A decimal before the digits (6.00 then BEND) is not a count."
+    pattern: '(?i)(?<![\d./\-])(\d+)[ \t]+BENDS?\b(?![ \t]+(?:LINES?|RAD(?:IUS)?)\b)'
+    note: "N BEND or N BENDS. Not a fraction (1/4 BEND RADIUS), a stacked fraction, a dash label (-1 BEND), or a decimal such as 6.00."
 
   - id: callout_bend_up_down
     confidence: high
     layer: text
     role: count_each
-    pattern: '(?i)\bBEND[ \t]+(UP|DOWN)\b(?:[ \t]+\d+(?:\.\d+)?[ \t]*(?:°|DEG(?:REE)?S?))?(?:[ \t]+R\.?[ \t]*\d+(?:[.,]\d+)?)?'
-    note: One bend per BEND UP or BEND DOWN, including metric R1.5 / R1,5.
+    pattern: '(?i)\bBEND[ \t]+(UP|DOWN)\b(?:[ \t]+\d+(?:\.\d+)?[ \t]*(?:°|º|˚|DEG(?:REE)?S?\b))?(?:[ \t]+R[ \t]*(?:\d{1,2}[ \t]*/[ \t]*\d{1,2}|\.\d+|\d+(?:[.,]\d+)?))?'
+    note: One bend per BEND UP or BEND DOWN. Radius may be R.13, R .25, R 1/8, R1.5, or R1,5. The dash number in -1 BEND is not the count.
     sources:
       - title: SOLIDWORKS bend notes — direction, angle, radius
         url: https://www.cati.com/blog/solidworks-bend-note-formatting/
@@ -92,8 +104,8 @@ conventions:
     confidence: high
     layer: text
     role: count_each
-    pattern: '(?i)(?<![A-Z0-9])(UP|DOWN)[ \t]+\d+(?:\.\d+)?[ \t]*(?:°|DEG(?:REE)?S?)[ \t]+R\.?[ \t]*\d+(?:[.,]\d+)?'
-    note: "Default SolidWorks-style note without the word BEND, such as UP 90° R.06 or UP 90° R1.5."
+    pattern: '(?i)(?<![A-Z0-9])(UP|DOWN)[ \t]+\d+(?:\.\d+)?[ \t]*(?:°|º|˚|DEG(?:REE)?S?\b)(?:[ \t]+R[ \t]*(?:\d{1,2}[ \t]*/[ \t]*\d{1,2}|\.\d+|\d+(?:[.,]\d+)?))?'
+    note: "SolidWorks-style note without the word BEND. UP 90° R.13, DOWN 90° R 1/8, UP 90° R .25, and UP 90° with no radius."
     sources:
       - title: SOLIDWORKS bendnoteformat.txt — direction, angle, R radius
         url: https://forum.mycad.visiativ.com/t/solidworks-notes-de-pliage-dans-m-e-p/98215?lang=en
@@ -102,8 +114,8 @@ conventions:
     confidence: high
     layer: text
     role: count_each
-    pattern: '(?i)(?<!\d[ \t])\bBEND[ \t]+LINES?\b'
-    note: Each BEND LINE label is one bend. N BEND LINES is the explicit count instead.
+    pattern: '(?i)(?<!\d[ \t])\bBEND[ \t]+LINES?\b(?!\s*\))'
+    note: Each BEND LINE label is one bend. (BEND LINE) is blanked before matching, so a dimension label is not a bend. N BEND LINES is the explicit count instead.
 
   - id: table_row_direction
     confidence: high
@@ -153,9 +165,9 @@ conventions:
     confidence: low
     layer: text
     role: insufficient
-    pattern: '(?i)\b\d+(?:\.\d+)?[ \t]*(?:°|DEG(?:REE)?S?)\b|(?:∠)'
+    pattern: '(?i)(?<![A-Z0-9.])\d+(?:\.\d+)?[ \t]*(?:°|º|˚|DEG(?:REE)?S?\b)|(?:∠)'
     flag: a bend angle does not give a count
-    note: "A degree dimension or the angle symbol alone. Chamfer and countersink lines are masked first."
+    note: "A degree dimension or the angle symbol alone. The degree sign has no word boundary after it. Chamfer, countersink, and angular-tolerance lines are masked first."
 
   - id: low_bend_radius
     confidence: low
@@ -198,7 +210,7 @@ conventions:
     layer: geometry
     role: geometry
     dash: center
-    note: "PyMuPDF dash array of long-short-long-short on a straight stroke at least 1 inch long. ASME Y14.2 center lines are long/short dashes. Y14.2 does not name them as bend lines; Inventor and Solid Edge draw bend centerlines in that style."
+    note: "PyMuPDF dash array of long-short-long-short on a straight stroke at least 1 inch long. Counted only as corroboration when the text already has the same bend count. Hole and symmetry centerlines do not create a bend. ASME Y14.2 center lines are long/short dashes. Y14.2 does not name them as bend lines; Inventor and Solid Edge draw bend centerlines in that style."
     sources:
       - title: ASME Y14.2-2014 — center lines, section 4.7
         url: https://www.asme.org/codes-standards/find-codes-standards/y14-2-line-conventions-lettering/2014
@@ -223,4 +235,4 @@ conventions:
     role: geometry
     dash: perpendicular
     flag: bends are not in a single plane
-    note: Two long center or phantom directions about 90° apart. Hidden-line dashes and solid lines are not bend lines.
+    note: Two long center or phantom directions about 90° apart, and only when those lines are the same count as the text bends. Extra hole centerlines do not make this flag. Hidden-line dashes and solid lines are not bend lines.

@@ -2,6 +2,8 @@
 
 Kyle's sheet-metal guide, built into `secturafab/flat_formula.py`. The bend count still comes from `quote_core/bend_conventions.yaml`. This page is only the flat length.
 
+If the drawing prints a flat size on a FLAT PATTERN, FLAT, or DEVELOPED view, that size is the blank. The line note says `source drawing flat pattern`, and this formula does not run. The formula is the fallback when that size is not printed and the legs, thickness, and radius are all readable. Otherwise the quote flags.
+
 K is `materials.flat_pattern_k_factor` in `config/shop_rates.yaml`. The shop setting is **0.33**. Every formed line note says `K=0.33 assumed` (or the configured value, if that setting is changed).
 
 T is thickness in inches. R is the inside bend radius after forming, in inches. θ is the change in direction from flat, in degrees. An included angle of 135° is θ = 45° (θ = 180 − included).

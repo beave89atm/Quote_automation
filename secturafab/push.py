@@ -7647,13 +7647,19 @@ class SecturaFabPushService:
                                 flat_width_in=(
                                     pdf_only_plan.width_in
                                     if pdf_only_plan is not None
-                                    and pdf_only_plan.flats_from_formula
+                                    and (
+                                        pdf_only_plan.flats_from_formula
+                                        or pdf_only_plan.flat_source == "drawing flat pattern"
+                                    )
                                     else None
                                 ),
                                 flat_length_in=(
                                     pdf_only_plan.length_in
                                     if pdf_only_plan is not None
-                                    and pdf_only_plan.flats_from_formula
+                                    and (
+                                        pdf_only_plan.flats_from_formula
+                                        or pdf_only_plan.flat_source == "drawing flat pattern"
+                                    )
                                     else None
                                 ),
                                 line_note=(
