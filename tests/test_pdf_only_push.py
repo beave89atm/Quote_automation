@@ -12,8 +12,12 @@ import fitz
 import pytest
 
 from quote_core.config import load_shop_rates
-from secturafab.pdf_only import plan_pdf_only_part
-from secturafab.push import SecturaFabPushService
+from secturafab.pdf_only import plan_pdf_only_file, plan_pdf_only_part
+from secturafab.push import (
+    SecturaFabPushService,
+    collect_job_files,
+    pdf_bend_reader_applies,
+)
 from tests.fixtures.pdf_only_pages import (
     PLATE_DRAWING,
     PLATE_FLATS,
@@ -865,3 +869,192 @@ def test_hole_missing_contours_still_fails(tmp_path: Path, monkeypatch):
     blob = " ".join(notes)
     assert "Image Files DoD FAIL" in blob
     assert "NumberOfContours=0 is acceptable" not in blob
+
+
+def test_pdf_bend_reader_applies_only_without_a_usable_step(tmp_path: Path):
+    """The decision is the file list: a STEP on the part turns the reader off."""
+    step = tmp_path / "SAMPLE100.stp"
+    step.write_bytes(b"ISO-10303-21;")
+    pdf = tmp_path / "SAMPLE100.pdf"
+    pdf.write_bytes(b"%PDF")
+    missing = tmp_path / "GONE.stp"
+
+    assert pdf_bend_reader_applies(cad_files=None) is True
+    assert pdf_bend_reader_applies(cad_files=[]) is True
+    assert pdf_bend_reader_applies(cad_files=[missing]) is True
+    assert pdf_bend_reader_applies(cad_files=[pdf]) is True
+    assert pdf_bend_reader_applies(cad_files=[step]) is False
+    assert pdf_bend_reader_applies(cad_files=[step, pdf]) is False
+
+    _drawings, both = collect_job_files(pdf_path=pdf, stp_path=step, library=None)
+    assert pdf_bend_reader_applies(cad_files=both) is False
+    _drawings, step_only = collect_job_files(pdf_path=None, stp_path=step, library=None)
+    assert pdf_bend_reader_applies(cad_files=step_only) is False
+    _drawings, pdf_only = collect_job_files(pdf_path=pdf, stp_path=None, library=None)
+    assert pdf_bend_reader_applies(cad_files=pdf_only) is True
+
+    folder = tmp_path / "part"
+    folder.mkdir()
+    (folder / "SAMPLE100.step").write_bytes(b"ISO-10303-21;")
+    folder_pdf = folder / "SAMPLE100.pdf"
+    folder_pdf.write_bytes(b"%PDF")
+    _drawings, from_folder = collect_job_files(
+        pdf_path=folder_pdf,
+        stp_path=None,
+        library={"folder": str(folder)},
+    )
+    assert pdf_bend_reader_applies(cad_files=from_folder) is False
+
+
+def _reader_must_stay_off(*_args, **_kwargs):
+    raise AssertionError("PDF bend reader ran on a quote that has a STEP")
+
+
+def _run_step_push(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, with_pdf: bool):
+    """Push a STEP quote. The PDF reader and PDF finish must not run."""
+    from contextlib import ExitStack
+
+    from tests.test_secturafab_website import _gold_cad
+
+    _silence_chrome(monkeypatch)
+    work = tmp_path / ("both" if with_pdf else "step")
+    work.mkdir()
+    stp = work / "SAMPLE100.stp"
+    stp.write_bytes(b"ISO-10303-21;")
+    pdf = None
+    if with_pdf:
+        pdf = work / "SAMPLE100.pdf"
+        _write_pdf(pdf, _formed_plate("HEM"))
+        refused = plan_pdf_only_file(pdf, title="SAMPLE100", part_key="SAMPLE100")
+        assert refused.route == "refuse"
+        assert "hem is not a simple bend" in refused.notes[-1]
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    gold_item = _gold_cad("SAMPLE100 - 0.25 in A36")
+    gold_item["ID"] = "p1"
+    gold_item["Data"] = 'DataPart:{"Time":0.02}'
+    reads = {"n": 0}
+
+    def _get_json(_path):
+        reads["n"] += 1
+        if reads["n"] <= 2:
+            return {"QuoteNumber": "SAMPLE100", "ItemCount": 0, "ItemList": [], **_ORG}
+        return {
+            "QuoteNumber": "SAMPLE100",
+            "Description": "SAMPLE BRACKET",
+            "ItemCount": 1,
+            "ItemList": [gold_item],
+            **_ORG,
+        }
+
+    client.get_json.side_effect = _get_json
+    service = _service(client)
+    finish_cad = MagicMock(return_value=["Finish CAD"])
+    patches = (
+        patch("secturafab.chrome_cdp.chrome_quotes_live", return_value=False),
+        patch("secturafab.chrome_cdp.quotes_tab", return_value=None),
+        patch("secturafab.chrome_cdp.chrome_session_lost", return_value=False),
+        patch("secturafab.pdf_only.plan_pdf_only_file", _reader_must_stay_off),
+        patch.object(service, "upload_drawings_quote_request", return_value="qr"),
+        patch.object(service, "finish_cad_files", finish_cad),
+        patch.object(
+            service,
+            "finish_pdf_files",
+            side_effect=AssertionError("PDF finish ran on a STEP quote"),
+        ),
+        patch.object(service, "create_quote", return_value="qid"),
+        patch.object(service, "allocate_quote_number", return_value="SAMPLE100"),
+        patch.object(service, "apply_item_categories", return_value=[]),
+        patch("secturafab.push.ensure_assembly_root", return_value=[]),
+        patch("secturafab.push.relink_assembly_children", return_value=[]),
+        patch("secturafab.push.ensure_purchased_components", return_value=[]),
+        patch("secturafab.push.find_purchased_part_keys", return_value={}),
+        patch("secturafab.push.refresh_bom_rows_for_push", return_value=([], [])),
+        patch("secturafab.push.apply_bom_quantities", return_value=[]),
+        patch("secturafab.push.ensure_laser_profile_ops", return_value=[]),
+        patch("secturafab.push.ensure_weld_ops", return_value=[]),
+        patch("secturafab.push.finalize_quote_ops", return_value=[]),
+        patch("secturafab.push.ensure_imperial_item_units", return_value=[]),
+        patch("secturafab.push.extract_assembly_description", return_value="SAMPLE BRACKET"),
+        patch(
+            "secturafab.push.apply_quote_organization",
+            return_value=[f"Set Organization: {_ORG['OrganizationName']}"],
+        ),
+        patch("secturafab.push.persist_classified_item_fields", return_value=[]),
+        patch("secturafab.push.persist_quote_header", return_value=[]),
+        patch("secturafab.push.retype_linears_to_pt10_keep_persist", return_value=[]),
+        patch.object(service, "nest_after_finish", return_value=[]),
+    )
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        result = service.push_job(
+            title="SAMPLE100",
+            pdf_filename="SAMPLE100.pdf" if pdf else None,
+            pdf_path=pdf,
+            stp_path=stp,
+            takeoff={"library": {}},
+            times={"weld_minutes": 0, "total_inches": 0},
+            job_id=100,
+            organization="Safe Cave",
+        )
+    return result, finish_cad
+
+
+def test_step_and_pdf_bend_reader_precedence(tmp_path: Path, monkeypatch):
+    """Both files, STEP only, and PDF only. The STEP count and flat win."""
+    both, both_cad = _run_step_push(tmp_path, monkeypatch, with_pdf=True)
+    assert both.ok is True, (both.error, both.notes)
+    assert both_cad.call_count == 1
+    cad_files = both_cad.call_args.kwargs["cad_files"]
+    assert [path.suffix.lower() for path in cad_files] == [".stp"]
+    blob = " ".join(both.notes or [])
+    assert "hem is not a simple bend" not in blob
+    assert "FLAG:" not in blob
+    assert "Bend op with Profile; bend count" not in blob
+
+    step_only, step_cad = _run_step_push(tmp_path, monkeypatch, with_pdf=False)
+    assert step_only.ok is True, (step_only.error, step_only.notes)
+    assert step_cad.call_count == 1
+    assert step_cad.call_args.kwargs["cad_files"][0].suffix.lower() == ".stp"
+
+    _silence_chrome(monkeypatch)
+    pdf_only = tmp_path / "pdf-only" / "SAMPLE100.pdf"
+    pdf_only.parent.mkdir()
+    _write_pdf(pdf_only, _formed_plate("HEM"))
+    client = MagicMock()
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    service = _service(client)
+    seen = {"reader": 0}
+    real_reader = plan_pdf_only_file
+
+    def _spy(path, **kwargs):
+        seen["reader"] += 1
+        return real_reader(path, **kwargs)
+
+    with patch("secturafab.pdf_only.plan_pdf_only_file", _spy), patch.object(
+        service, "create_quote", return_value="qid"
+    ) as create_q, patch.object(
+        service, "finish_cad_files"
+    ) as finish_cad, patch.object(
+        service, "finish_pdf_files"
+    ) as finish_pdf, patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ):
+        pdf_result = service.push_job(
+            title="SAMPLE100",
+            pdf_filename="SAMPLE100.pdf",
+            pdf_path=pdf_only,
+            stp_path=None,
+            takeoff={"library": {}},
+            times={},
+            job_id=101,
+            organization="Safe Cave",
+        )
+    assert seen["reader"] == 1
+    assert pdf_result.ok is False
+    assert pdf_result.error is not None
+    assert "hem is not a simple bend" in pdf_result.error
+    create_q.assert_not_called()
+    finish_cad.assert_not_called()
+    finish_pdf.assert_not_called()

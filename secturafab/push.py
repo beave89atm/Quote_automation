@@ -1488,6 +1488,39 @@ def collect_job_files(
     return drawings, cad
 
 
+def usable_step_files(paths: list[Path] | None) -> list[Path]:
+    """STEP files collected for this part.
+
+    A file here is the bend count and the flat pattern. Size does not
+    matter: an oversized STEP still keeps the PDF bend reader off.
+    """
+    found: list[Path] = []
+    for path in paths or []:
+        try:
+            candidate = Path(path)
+        except TypeError:
+            continue
+        if candidate.suffix.lower() not in {".stp", ".step"}:
+            continue
+        try:
+            if candidate.is_file():
+                found.append(candidate)
+        except OSError:
+            continue
+    return found
+
+
+def pdf_bend_reader_applies(*, cad_files: list[Path] | None) -> bool:
+    """PDF bend count and flat pattern are only for a quote with no STEP.
+
+    When this is false the reader and its flags stay off. They must not
+    replace the STEP bend count or the server flat pattern, and they
+    must not refuse the quote. A PDF count that disagrees with the STEP
+    is a note warning at most, and only after the STEP count is known.
+    """
+    return not usable_step_files(cad_files)
+
+
 def _organization_bind_fields(
     org_id: str,
     name: str,
@@ -7012,11 +7045,18 @@ class SecturaFabPushService:
             loose_linear = (not cad) and classify_sectura_item(
                 title or part_key or ""
             ) == "Linear"
-            # One drawing, no STEP, no BOM kids: plate/sheet → Image Files,
-            # tube/bar → Long. Missing thickness, L/W, or cut length FLAGs
-            # before mint. Empty or non-stock text stays on the existing path.
+            # PDF bend count and flat pattern are a fallback for a quote
+            # with no usable STEP. A STEP on the part wins: do not run the
+            # reader, and do not let its flags refuse the quote. Plate/sheet
+            # with no STEP and no BOM kids → Image Files; tube/bar → Long.
+            # Missing thickness, L/W, or cut length FLAGs before mint.
             pdf_only_plan = None
-            if not cad and has_job_pdf and not bom_rows:
+            if (
+                pdf_bend_reader_applies(cad_files=cad)
+                and not cad
+                and has_job_pdf
+                and not bom_rows
+            ):
                 from .pdf_only import plan_pdf_only_file
 
                 pdf_only_plan = plan_pdf_only_file(
@@ -7647,13 +7687,19 @@ class SecturaFabPushService:
                                 flat_width_in=(
                                     pdf_only_plan.width_in
                                     if pdf_only_plan is not None
-                                    and pdf_only_plan.flats_from_formula
+                                    and (
+                                        pdf_only_plan.flats_from_formula
+                                        or pdf_only_plan.flat_source == "drawing flat pattern"
+                                    )
                                     else None
                                 ),
                                 flat_length_in=(
                                     pdf_only_plan.length_in
                                     if pdf_only_plan is not None
-                                    and pdf_only_plan.flats_from_formula
+                                    and (
+                                        pdf_only_plan.flats_from_formula
+                                        or pdf_only_plan.flat_source == "drawing flat pattern"
+                                    )
                                     else None
                                 ),
                                 line_note=(

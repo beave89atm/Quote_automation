@@ -27,7 +27,7 @@ from quote_core.drawing_title import extract_title_from_pdf_text
 from quote_core.part_materials import _sectura_material_string, parse_material_block
 
 from .bend_op import BEND_COUNT_WRITE_GAP_NOTE
-from .flat_pattern import evaluate_formed
+from .flat_pattern import ROUND_STOCK_BEND_FLAG, evaluate_formed, round_stock_bend_evidence
 from .item_desc import parse_plate_flats
 from .line_item_ops import parse_cut_length
 from .push import (
@@ -59,6 +59,9 @@ class PdfOnlyPlan:
     line_note: str = ""
     operations: tuple[str, ...] = ()
     flats_from_formula: bool = False
+    # ``drawing flat pattern`` when the blank size was printed on the sheet.
+    # ``formula`` when Kyle's flat-length formula produced the length.
+    flat_source: str = ""
 
 
 def _flag(field: str, detail: str) -> str:
@@ -267,6 +270,7 @@ def plan_pdf_only_part(
     title: str = "",
     part_key: str = "",
     drawings: list | None = None,
+    text_blocks: list | None = None,
 ) -> PdfOnlyPlan:
     """Decide Image Files vs Long from drawing text. Never invent a dimension."""
     blob, drawing_title = _classify_blob(text, title, part_key)
@@ -299,17 +303,23 @@ def plan_pdf_only_part(
             f"{text}\n{title}",
             thickness_in=float(thickness_in) if thickness_in is not None else None,
             drawings=drawings,
+            text_blocks=text_blocks,
         )
         if decision is None:
             return None
         if decision.flag:
+            recorded = (decision.line_note,) if decision.line_note else ()
             return PdfOnlyPlan(
                 route="refuse",
                 missing=(decision.flag_field,),
                 description=description,
                 material=None if grade.blocks else material,
                 thickness_in=float(thickness_in) if thickness_in is not None else None,
-                notes=_with_grade(grade, _flag(decision.flag_field, decision.flag)),
+                notes=_with_grade(
+                    grade,
+                    _flag(decision.flag_field, decision.flag),
+                    *recorded,
+                ),
             )
         if grade.blocks:
             return _blocked_grade()
@@ -329,7 +339,8 @@ def plan_pdf_only_part(
             width_in=decision.width_in,
             length_in=decision.developed_length_in,
             bend_count=decision.bend_count,
-            flats_from_formula=True,
+            flats_from_formula=decision.length_source == "formula",
+            flat_source=decision.length_source,
             line_note=decision.line_note,
             operations=decision.operations,
             notes=_with_grade(
@@ -347,6 +358,18 @@ def plan_pdf_only_part(
         return PdfOnlyPlan(route="unclassified")
 
     if category == "Linear" or (linear and not plate):
+        if round_stock_bend_evidence(f"{text}\n{title}"):
+            return PdfOnlyPlan(
+                route="refuse",
+                missing=("formed part",),
+                description=description,
+                material=None if grade.blocks else material,
+                thickness_in=float(thickness_in) if thickness_in is not None else None,
+                notes=_with_grade(
+                    grade,
+                    _flag("formed part", ROUND_STOCK_BEND_FLAG),
+                ),
+            )
         cut = parse_cut_length(text) or parse_cut_length(title)
         if cut is None:
             note = _flag(
@@ -466,35 +489,110 @@ def plan_pdf_only_part(
     return PdfOnlyPlan(route="unclassified", description=description)
 
 
+def _drawing_text_usable(text: str) -> bool:
+    """False for a blank scan or a page that extracts as one character per line.
+
+    A rotated text layer comes back reversed, one character per line. That
+    is not a readable drawing. A short plate note with real words is readable.
+    """
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if not lines:
+        return False
+    if len(lines) >= 8:
+        lengths = sorted(len(line) for line in lines)
+        median = lengths[len(lengths) // 2]
+        if median <= 1:
+            return False
+    words = re.findall(r"[A-Za-z]{2,}", text or "")
+    if not words and sum(len(line) for line in lines) < 8:
+        return False
+    return True
+
+
+def _pdf_text_and_vectors(path: Path) -> tuple[str, list | None, list | None]:
+    """Text, drawings, and text blocks. Empty text when the file cannot be read."""
+    import fitz
+
+    doc = fitz.open(str(path))
+    try:
+        texts: list[str] = []
+        drawings: list = []
+        blocks: list = []
+        for page in doc:
+            texts.append(page.get_text("text") or "")
+            for drawing in page.get_drawings() or []:
+                stamped = dict(drawing)
+                stamped["page"] = page.number
+                stamped["page_rect"] = (
+                    float(page.rect.x0),
+                    float(page.rect.y0),
+                    float(page.rect.x1),
+                    float(page.rect.y1),
+                )
+                drawings.append(stamped)
+            raw = page.get_text("dict") or {}
+            for block in raw.get("blocks") or []:
+                if block.get("type") != 0:
+                    continue
+                for line in block.get("lines") or []:
+                    # One block per span. A line join merges a stacked
+                    # fraction into "44 1" over "16", and the reader then
+                    # sees only the denominator.
+                    direction = tuple(line.get("dir") or (1, 0))
+                    for span in line.get("spans") or []:
+                        text = span.get("text") or ""
+                        if not text.strip():
+                            continue
+                        raw_box = span.get("bbox") or line.get("bbox") or ()
+                        try:
+                            box = tuple(float(value) for value in raw_box)
+                        except (TypeError, ValueError):
+                            box = tuple(raw_box)
+                        blocks.append(
+                            {
+                                "text": text,
+                                "dir": direction,
+                                "bbox": box,
+                                "size": span.get("size"),
+                                "page": page.number,
+                            }
+                        )
+        return "\n".join(texts), drawings, blocks
+    finally:
+        doc.close()
+
+
 def plan_pdf_only_file(
     path: Path | None,
     *,
     title: str = "",
     part_key: str = "",
 ) -> PdfOnlyPlan:
-    """Read one PDF. Unreadable bytes stay unclassified (no invented fields)."""
+    """Read one PDF. A missing file stays unclassified.
+
+    Bytes that are not a PDF stay unclassified, same as before, so a later
+    check can still refuse the push. A PDF that opens with no usable text
+    (a scan, or rotated text that extracts as one character per line) is
+    FLAG: unreadable, needs human review. It is not a flat plate.
+    """
     if path is None or not Path(path).is_file():
         return PdfOnlyPlan(route="unclassified")
     try:
-        from quote_core.weight import _read_pdf_text
-
-        text = _read_pdf_text(path) or ""
-    except Exception:  # noqa: BLE001 — corrupt test PDFs are not a stock callout
-        text = ""
-    drawings: list | None = None
-    if text:
-        try:
-            import fitz
-
-            doc = fitz.open(str(path))
-            try:
-                drawings = []
-                for page in doc:
-                    drawings.extend(page.get_drawings() or [])
-            finally:
-                doc.close()
-        except Exception:  # noqa: BLE001 — text-only when vectors cannot be read
-            drawings = None
+        text, drawings, text_blocks = _pdf_text_and_vectors(Path(path))
+    except Exception:  # noqa: BLE001 — corrupt bytes are not a readable drawing
+        return PdfOnlyPlan(route="unclassified")
+    if not _drawing_text_usable(text):
+        return PdfOnlyPlan(
+            route="refuse",
+            missing=("drawing text",),
+            notes=(
+                _flag("drawing text", "unreadable, needs human review"),
+            ),
+        )
     return plan_pdf_only_part(
-        text=text, title=title, part_key=part_key, drawings=drawings
+        text=text,
+        title=title,
+        part_key=part_key,
+        drawings=drawings,
+        text_blocks=text_blocks,
     )
