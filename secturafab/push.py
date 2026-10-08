@@ -4800,6 +4800,11 @@ class SecturaFabPushService:
         library: dict[str, Any] | None = None,
         extra_pdfs: list[Path] | None = None,
         takeoff: dict[str, Any] | None = None,
+        drawing_material: str | None = None,
+        flat_width_in: float | None = None,
+        flat_length_in: float | None = None,
+        line_note: str | None = None,
+        bend_count: int | None = None,
     ) -> list[str]:
         """Image Files Finish: page +Add Files bind → stamp → OnAddPDFClick.
 
@@ -4819,6 +4824,9 @@ class SecturaFabPushService:
         Weight / Weight_UseLocal from the XHR / #Weight (leftover
         XHR Weight=7.7607 was not on the row).         Empty InternalData
         after a landed perimeter is expected for no-hole rectangles.
+        NumberOfContours=0 is acceptable on that plate (PR + laser pack
+        + UnitCost>UnitWeightCost). The outer outline is not a contour.
+        A drawing hole still needs NumberOfContours/Pierces.
         AddNewPDFFeature() with no args is not gold. Named hole step
         is ``AddNewPDFFeature(feature, "cad")`` then wait for GET
         ``/Quote/PDFInternal`` (not a 400ms race) then page
@@ -5011,25 +5019,33 @@ class SecturaFabPushService:
                 named_grade = "A572 Grade 50"
             elif re.search(r"(?i)DOMEX|WELDOX|100\s*K", grade_blob):
                 named_grade = "DOMEX/WELDOX"
-            plate_mat = _shop_material(
-                locked.get("grade")
-                or (pm.material if pm and pm.material else None)
-                or named_grade
-                or material
-            )
+            if drawing_material and str(drawing_material).strip():
+                # PDF-only grade (named, or the shop carbon-steel default).
+                # A parsed A36 seed must not replace it.
+                plate_mat = _shop_material(locked.get("grade") or drawing_material)
+            else:
+                plate_mat = _shop_material(
+                    locked.get("grade")
+                    or (pm.material if pm and pm.material else None)
+                    or named_grade
+                    or material
+                )
             plate_thk = locked.get("thickness")
             if plate_thk is None and pm and pm.thickness_in:
                 plate_thk = pm.thickness_in
             if plate_thk is None:
                 plate_thk = thickness
-            plate_w, plate_l = resolve_cad_plate_flats(
-                pn,
-                bom_row=matched_row,
-                takeoff=takeoff,
-                pdf_path=path,
-                noun=noun,
-                locked=locked,
-            )
+            if flat_width_in and flat_length_in:
+                plate_w, plate_l = float(flat_width_in), float(flat_length_in)
+            else:
+                plate_w, plate_l = resolve_cad_plate_flats(
+                    pn,
+                    bom_row=matched_row,
+                    takeoff=takeoff,
+                    pdf_path=path,
+                    noun=noun,
+                    locked=locked,
+                )
             if matched_row is not None and plate_w and plate_l:
                 matched_row["width_in"] = plate_w
                 matched_row["length_in"] = plate_l
@@ -5124,6 +5140,9 @@ class SecturaFabPushService:
                     holes = _holes_from_noun(str(plat.get("description") or ""))
                 if holes:
                     stamp_row["HoleDiameter"] = holes[0]["diameter"]
+                if line_note:
+                    stamp_row["Notes"] = line_note
+                    stamp_row["Memo"] = line_note
                 stamp_rows.append(stamp_row)
             else:
                 missing = []
@@ -5135,6 +5154,12 @@ class SecturaFabPushService:
                     f"FLAG: PDF row {path.name} missing {' and '.join(missing) or 'Qty and L/W'} "
                     "— skipped, not inventing L/W"
                 )
+        if line_note and line_note not in notes:
+            notes.append(line_note)
+        if bend_count is not None and int(bend_count) > 0:
+            bend_note = f"Bend op with Profile; bend count {int(bend_count)}"
+            if bend_note not in notes:
+                notes.append(bend_note)
         from_kendo = False
         bound = False
         upload_via = ""
@@ -5143,6 +5168,7 @@ class SecturaFabPushService:
         if cad_paths:
             from .website import (
                 cookie_http_pdf_upload_is_fail,
+                drawing_hole_named,
                 hole_feature_without_pdfinternal_is_fail,
                 list0_pack_badge_ocl_contours_is_gold,
                 list0_pack_badge_ocl_is_gold,
@@ -5664,11 +5690,19 @@ class SecturaFabPushService:
                             notes.append(
                                 f"finish_getpdfdata_n={result.get('getpdfdata_n')}"
                             )
-                        if list0_pack_contours_zero_after_productid_hole_is_fail(
+                        hole_named = drawing_hole_named(
                             result,
                             stamp_out if isinstance(stamp_out, dict) else None,
                             stamp_rows,
-                        ):
+                        )
+                        contours_zero_after_hole = (
+                            list0_pack_contours_zero_after_productid_hole_is_fail(
+                                result,
+                                stamp_out if isinstance(stamp_out, dict) else None,
+                                stamp_rows,
+                            )
+                        )
+                        if contours_zero_after_hole:
                             notes.append(
                                 "WARNING: AddItem_PDFFiles List[0] Contours=0 "
                                 "or BadgeString empty after ProductID+hole "
@@ -5679,6 +5713,29 @@ class SecturaFabPushService:
                                 "do not invent FileList keys — Nest is later — "
                                 "Image Files DoD FAIL"
                             )
+                        try:
+                            named_contours = int(
+                                result.get("response_number_of_contours") or 0
+                            )
+                        except (TypeError, ValueError):
+                            named_contours = 0
+                        contours_named = "response_number_of_contours" in result
+                        if (
+                            contours_named
+                            and named_contours < 1
+                            and hole_named
+                            and not contours_zero_after_hole
+                            and not finish_prt_pdf_still_contours_zero_is_fail(
+                                result,
+                                stamp_out if isinstance(stamp_out, dict) else None,
+                            )
+                        ):
+                            notes.append(
+                                "WARNING: drawing hole still needs "
+                                "NumberOfContours/Pierces (gold 14501-1 is 1/1) "
+                                "— NumberOfContours=0 — do not invent FileList "
+                                "keys — Image Files DoD FAIL"
+                            )
                         if list0_pack_badge_ocl_contours_is_gold(result):
                             notes.append(
                                 "list0_pack BadgeString PR + laser OCL + "
@@ -5686,10 +5743,18 @@ class SecturaFabPushService:
                                 "NumberOfContours/Pierces 1/1"
                             )
                         elif list0_pack_badge_ocl_is_gold(result):
-                            notes.append(
-                                "list0_pack BadgeString PR + laser OCL + "
-                                "UnitCost>UnitWeightCost"
-                            )
+                            if contours_named and named_contours < 1 and not hole_named:
+                                notes.append(
+                                    "list0_pack BadgeString PR + laser OCL + "
+                                    "UnitCost>UnitWeightCost; NumberOfContours=0 "
+                                    "is acceptable (no hole; outer outline is not "
+                                    "a contour)"
+                                )
+                            else:
+                                notes.append(
+                                    "list0_pack BadgeString PR + laser OCL + "
+                                    "UnitCost>UnitWeightCost"
+                                )
                         if plate_modal_without_filelist_productid_is_fail(
                             stamp_out if isinstance(stamp_out, dict) else None,
                             result,
@@ -6947,6 +7012,43 @@ class SecturaFabPushService:
             loose_linear = (not cad) and classify_sectura_item(
                 title or part_key or ""
             ) == "Linear"
+            # One drawing, no STEP, no BOM kids: plate/sheet → Image Files,
+            # tube/bar → Long. Missing thickness, L/W, or cut length FLAGs
+            # before mint. Empty or non-stock text stays on the existing path.
+            pdf_only_plan = None
+            if not cad and has_job_pdf and not bom_rows:
+                from .pdf_only import plan_pdf_only_file
+
+                pdf_only_plan = plan_pdf_only_file(
+                    job_pdf,
+                    title=title or "",
+                    part_key=part_key or "",
+                )
+                if pdf_only_plan.route == "refuse":
+                    notes.extend(pdf_only_plan.notes)
+                    msg = pdf_only_plan.notes[-1] if pdf_only_plan.notes else (
+                        "FLAG: PDF-only part is missing a required field"
+                    )
+                    return PushResult(
+                        ok=False,
+                        error=msg,
+                        notes=notes,
+                        status="failed",
+                        last_error=msg,
+                    )
+                if pdf_only_plan.notes:
+                    notes.extend(pdf_only_plan.notes)
+                if pdf_only_plan.route == "long":
+                    loose_linear = True
+                elif pdf_only_plan.route == "image_files":
+                    loose_linear = False
+                if pdf_only_plan.material and pdf_only_plan.route in {
+                    "image_files",
+                    "long",
+                }:
+                    # Shop carbon-steel default or a grade the drawing named.
+                    # Do not leave the silent A36 seed in place of this.
+                    material = pdf_only_plan.material
             if on_progress:
                 on_progress(
                     {
@@ -7428,12 +7530,21 @@ class SecturaFabPushService:
                         "skipped Image Files / Long. Public nest/weld continue."
                     )
                 elif loose_linear:
+                    linear_desc = quote_description or title or part_key
+                    linear_material = material
+                    linear_length = None
+                    if pdf_only_plan is not None and pdf_only_plan.route == "long":
+                        linear_desc = pdf_only_plan.description or linear_desc
+                        if pdf_only_plan.material:
+                            linear_material = pdf_only_plan.material
+                        linear_length = pdf_only_plan.cut_length_in
                     notes.extend(
                         self.add_loose_linears(
                             quote_id=quote_id,
-                            description=quote_description or title or part_key,
-                            material=material,
+                            description=linear_desc,
+                            material=linear_material,
                             qty=qty,
+                            length=linear_length,
                         )
                     )
                     attempted_pack_stamp = True
@@ -7527,6 +7638,34 @@ class SecturaFabPushService:
                                 library=library,
                                 extra_pdfs=extra_pdfs,
                                 takeoff=takeoff,
+                                drawing_material=(
+                                    pdf_only_plan.material
+                                    if pdf_only_plan is not None
+                                    and pdf_only_plan.route == "image_files"
+                                    else None
+                                ),
+                                flat_width_in=(
+                                    pdf_only_plan.width_in
+                                    if pdf_only_plan is not None
+                                    and pdf_only_plan.flats_from_formula
+                                    else None
+                                ),
+                                flat_length_in=(
+                                    pdf_only_plan.length_in
+                                    if pdf_only_plan is not None
+                                    and pdf_only_plan.flats_from_formula
+                                    else None
+                                ),
+                                line_note=(
+                                    pdf_only_plan.line_note
+                                    if pdf_only_plan is not None and pdf_only_plan.line_note
+                                    else None
+                                ),
+                                bend_count=(
+                                    pdf_only_plan.bend_count
+                                    if pdf_only_plan is not None
+                                    else None
+                                ),
                             )
                         )
                         uploaded.extend(p.name for p in pdfs)
@@ -7594,6 +7733,12 @@ class SecturaFabPushService:
                         if cad and (not created or not cad_gold):
                             fail_closed = True
                         elif expect_cad and not cad_gold:
+                            fail_closed = True
+                        elif (
+                            pdf_only_plan is not None
+                            and pdf_only_plan.route == "long"
+                            and not gold
+                        ):
                             fail_closed = True
                         extra = (
                             "AddItem_PDFFiles HTTP 200 is not session-expired; "
