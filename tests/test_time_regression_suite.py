@@ -265,7 +265,7 @@ def test_time_org_and_pedestal_title():
         r"C:\Users\Kyle\Kannon Manufacturing Inc\Fort Worth - Documents"
         r"\Engineering\Customer Drawings\Time\Pedestal Weldment - 1001898-1"
     )
-    assert detect_organization(library_folder=folder) == "Time Manufacturing Waco"
+    assert detect_organization(library_folder=folder) == "Time Manufacturing"
     assert title_from_library_folder(folder, part_key="1001898-1") == "PEDESTAL WELDMENT"
     assert (
         format_assembly_description("1001898-1", "PEDESTAL WELDMENT")
@@ -501,7 +501,7 @@ def test_cookie_less_1001898_attach_profile_false(tmp_path: Path):
         return_value=["Skipped grafted Profile"],
     ), patch(
         "secturafab.push.apply_quote_organization",
-        return_value=["Set Organization: Time Manufacturing Waco"],
+        return_value=["Set Organization: Time Manufacturing"],
     ), patch(
         "secturafab.push.ensure_laser_profile_ops"
     ) as graft:

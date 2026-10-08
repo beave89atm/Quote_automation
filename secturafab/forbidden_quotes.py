@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+# Live Lvtong customer quote 2.03.115.100001. Writes and remints are refused.
+# In-page reads and page nest may still use an editor that is already this id.
+# REST GET is allowed for every forbidden id. Finish stays refused.
+LVTONG_CUSTOMER_QUOTE_ID = "3fa14f86-f4ef-49d6-bb43-1896a0eed92e"
+
 # Kyle-confirmed + leftover + human Time quotes. Create NEW quotes only.
 FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
     {
@@ -142,6 +147,7 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "ef865b0f-66d2-404e-bff2-9ed1e7bf00ea",  # 15911-9 Time STEP leftover @ 62f7a92 — UpdateItemType Cad OK, InternalData empty after explode, Finish refused invent=false; CadImport/Data + PartImage + GetBorderSize not observed vs H.6.38; ZZ-DEL-15911-9 — do not remint / PATCH
         "1994392f-54a5-4245-80ee-a947fb07e3a7",  # 21839-1 Time STEP leftover @ bb4998a+ — UpdateItemType Cad OK, InternalData empty after explode, full CadImport/Data+GetBorderSize+PartImage trail still empty, Finish refused invent=false; ZZ-DEL-21839-1 — do not remint / PATCH
         "afee7458-6651-447e-ba1b-62c1c9c90ce8",  # GSB20570006 Sprout 1.1 leftover (CoS hold) — empty InternalData after full Cad+wizard mid-wizard (11 parts), Finish refused invent=false; Sectura-side empty-InternalData outside H.6.38 / Time pick; ZZ-DEL-GSB20570006 — do not remint / PATCH
+        LVTONG_CUSTOMER_QUOTE_ID,  # Lvtong 2.03.115.100001 — real customer quote; never remint / PATCH / delete
     }
 )
 # cf8ec36e = EHB3112-1 OnAddDXFClick empty body (83c9200) — prefix only.
@@ -486,6 +492,7 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "ZZ-DEL-21839-1",  # 1994392f 21839-1 rename — do not remint
         "GSB20570006",  # Sprout 1.1 leftover (CoS hold) @ 2f6d74f+ — empty InternalData after full Cad+wizard mid-wizard (11 parts), Finish refused invent=false; afee7458-6651-447e-ba1b-62c1c9c90ce8; Sectura-side empty-InternalData outside H.6.38 / Time pick; ZZ-DEL-GSB20570006 — do not remint
         "ZZ-DEL-GSB20570006",  # afee7458 GSB20570006 rename — do not remint
+        "2.03.115.100001",  # Lvtong live customer quote 3fa14f86-f4ef-49d6-bb43-1896a0eed92e — never remint / PATCH
         # Do not remint 21785-1 / 21785-2 / 21785-3 / 35145-1 / Q10243 / P904272-1 / P904271-1 / 10289-4 / 10289-5 / 28768-1 / 28769-1 / 35136-1 / 14327-5 / 14327-8 / Q10329 / 14327-3 / Q10330 / 21841-1 / Q10331 / 14327-1 / Q10332 / Q10333 / Q10336 / Q10339 / Q10344 / Q10346 / B80510901 / Q10348 / H.16.70 / Q10349 / D.H.30.96 / Q10351 / H.8.38 / Q10354 / D.H.38.96 / Q10356 / V.20.78 / Q10365 / H.10.38 / Q10366 / H.6.38 / Q10367 / Q10369 / Q10368 / Q10371 / Q10372 / Q10373 / Q10374 / Q10375 / Q10377 / Q10379 / Q10380 / Q10381 / Q10382 / Q10383 / Q10399 / Q10420 / Q10450 / Q10429 / Q10475 / Q10476 / Q10479 / Q10480 / Q10481 / Q10482 / Q10483 / Q10484 / Q10485 / Q10486 / Q10430 / Q10431 / Q10435 / Q10470 / Q10471 / Q10472 / Q10473 / Q10474 / Q10421 / Q10407 / Q10408 / Q10358 / Q10359 / Q10350 / 21843-1 / Q10338 / CROSSDRAIN-12X7X60 / H638-CADPLATE / Q10334 / Q10335 / 28898-1 / 28772-1 / 14327-18 / 15911-9 / 21839-1 / GSB20570006.
         # Do not mint. Server never fills InternalData on explode.
         # Do not invent payload. Next mint only after a new named persist.
@@ -500,6 +507,16 @@ def is_forbidden_quote_id(quote_id: str | None) -> bool:
     if raw in {x.casefold() for x in FORBIDDEN_LIVE_QUOTE_IDS}:
         return True
     return any(raw.startswith(p.casefold()) for p in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES)
+
+
+def editor_read_or_nest_allowed(quote_id: str | None) -> bool:
+    """True for a customer quote whose editor reads and nest must keep working.
+
+    The id is still forbidden for writes and remints. Page Finish uses the
+    write gate and stays refused.
+    """
+    raw = str(quote_id or "").strip().casefold()
+    return bool(raw) and raw == LVTONG_CUSTOMER_QUOTE_ID.casefold()
 
 
 def is_forbidden_quote_number(quote_number: str | None) -> bool:

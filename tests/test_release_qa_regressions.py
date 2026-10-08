@@ -410,23 +410,40 @@ def test_nest_quote_api_does_not_post_json_idlist():
     client.post_json.assert_not_called()
 
 
-def test_create_quote_uses_page_new_quote_and_open_new_header():
+def test_create_quote_posts_v2_organization_id_and_open_new_header():
     from unittest.mock import patch
 
     from secturafab.client import SecturaFabApiError
     from secturafab.push import SecturaFabPushService
 
+    org_id = "b7dbc294-3fd2-43aa-99be-268a6c4fce14"
     client = MagicMock()
-    client.get_json.return_value = {
-        "ID": "new-qid",
-        "ProfitModel": 1,
-        "QuoteStatus": "OPEN-NEW",
-        "PrimaryOrganizationID": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
-    }
+
+    def _get(path, **kwargs):
+        assert "organization/lookup" not in str(path)
+        if f"v2/organization/{org_id}" in str(path):
+            return {
+                "Data": {
+                    "OrganizationId": org_id,
+                    "Name": "Time Manufacturing",
+                }
+            }
+        return {
+            "ID": "new-qid",
+            "ProfitModel": 1,
+            "QuoteStatus": "OPEN-NEW",
+            "PrimaryOrganizationID": org_id,
+        }
+
+    client.get_json.side_effect = _get
+    client.post_json.return_value = {"Data": {"QuoteId": "new-qid"}}
     with patch(
         "secturafab.chrome_cdp.page_create_quote",
-        return_value={"ok": True, "quote_id": "new-qid", "via": "GET /quote/create"},
-    ) as created, patch(
+        side_effect=AssertionError("page create"),
+    ), patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": {}},
+    ), patch(
         "secturafab.page_weld.set_page_quote_number",
         return_value=["QuoteNumber set via UpdatePropertyValue"],
     ) as number, patch(
@@ -438,37 +455,59 @@ def test_create_quote_uses_page_new_quote_and_open_new_header():
             "ok": True,
             "via": "OrganizationDetail",
             "search": False,
-            "org_id": "bound",
+            "org_id": org_id,
         },
     ) as bound:
         quote_id = SecturaFabPushService(client=client).create_quote(
             quote_number="ZZ-ORG",
             description="SAFE CAVE",
-            organization_name="Time Manufacturing Waco",
-            organization_id="b7dbc294-3fd2-43aa-99be-268a6c4fce14",
+            organization_name="Time Manufacturing",
+            organization_id=org_id,
         )
     assert quote_id == "new-qid"
-    created.assert_called_once()
+    assert client.post_json.call_args.args[0] == "v2/quote"
+    body = client.post_json.call_args.args[1]
+    assert body["OrganizationId"] == org_id
+    assert body["Description"] == "SAFE CAVE"
+    assert body["ExternalReference"] == "ZZ-ORG"
+    assert "OrganizationName" not in body
+    assert "LocationName" not in body
     assert number.call_args.args[1] == "ZZ-ORG"
     assert desc.call_args.args[1] == "SAFE CAVE"
-    assert bound.call_args.kwargs["org_name"] == "Time Manufacturing Waco"
+    assert bound.call_args.kwargs["org_name"] == "Time Manufacturing"
+    assert bound.call_args.kwargs["org_id"] == org_id
     client.request.assert_not_called()
-    client.get_json.return_value = {"ProfitModel": 0, "QuoteStatus": "OPEN-DRAFT"}
+
+    def _get_draft(path, **kwargs):
+        if f"v2/organization/{org_id}" in str(path):
+            return {
+                "Data": {
+                    "OrganizationId": org_id,
+                    "Name": "Time Manufacturing",
+                }
+            }
+        return {"ProfitModel": 0, "QuoteStatus": "OPEN-DRAFT"}
+
+    client.get_json.side_effect = _get_draft
+    client.post_json.return_value = {"Data": {"QuoteId": "draft-qid"}}
     with patch(
-        "secturafab.chrome_cdp.page_create_quote",
-        return_value={"ok": True, "quote_id": "draft-qid", "via": "GET /quote/create"},
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": {}},
     ), patch(
         "secturafab.page_weld.set_page_quote_number",
         return_value=["QuoteNumber set via UpdatePropertyValue"],
     ), patch(
         "secturafab.chrome_cdp.bind_quote_organization_detail",
-        return_value={"ok": True, "via": "OrganizationDetail", "search": False, "org_id": "bound"},
+        return_value={"ok": True, "via": "OrganizationDetail", "search": False, "org_id": org_id},
     ), pytest.raises(SecturaFabApiError, match="OPEN-NEW"):
         SecturaFabPushService(client=client).create_quote(
             quote_number="ZZ-ORG",
-            organization_name="Time Manufacturing Waco",
+            organization_name="Time Manufacturing",
         )
     client.request.assert_not_called()
+    assert all(
+        call.args[0] != "v2/organization" for call in client.post_json.call_args_list
+    )
 
 
 def test_relogin_success_clears_cooldown(tmp_path, monkeypatch):
@@ -2096,7 +2135,7 @@ def test_push_job_overrides_win_and_missing_org_fails_closed(tmp_path, monkeypat
     monkeypatch.setattr("secturafab.push.refresh_bom_rows_for_push", lambda *a, **k: ([], []))
     monkeypatch.setattr(
         "secturafab.push.detect_organization",
-        lambda **kwargs: "Time Manufacturing Waco",
+        lambda **kwargs: "Time Manufacturing",
     )
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=test"
@@ -2140,7 +2179,7 @@ def test_push_job_overrides_win_and_missing_org_fails_closed(tmp_path, monkeypat
         takeoff={"library": {"part_key": "21684-1"}},
         times={},
     )
-    assert created["organization_name"] == "Time Manufacturing Waco"
+    assert created["organization_name"] == "Time Manufacturing"
     assert "organization_override=" not in " ".join(time_job.notes)
 
     created.clear()

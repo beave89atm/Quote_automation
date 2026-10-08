@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
+from urllib.parse import quote
 
 from .client import SecturaFabClient
 from .website import EMPTY_GUID
 
-# Kyle-confirmed Time Manufacturing Waco tenant org (do not search-guess).
+# Time Waco is the organization named exactly "Time Manufacturing".
+# Resolve it by TIME_WACO_ORG_ID. Never look the name up, and never use
+# "Time Manufacturing Waco" (that string created a duplicate organization).
 TIME_WACO_ORG_ID = "b7dbc294-3fd2-43aa-99be-268a6c4fce14"
-TIME_WACO_ORG_NAME = "Time Manufacturing Waco"
+TIME_WACO_ORG_NAME = "Time Manufacturing"
+EXACT_ORG_NAME_HINT = (
+    "Use the exact Sectura organization name. "
+    "Partial names and 'Name - Location' forms do not match."
+)
 
 
 def org_empty_guid_is_fail(org_id: str | None) -> bool:
@@ -20,11 +26,26 @@ def org_empty_guid_is_fail(org_id: str | None) -> bool:
 
 
 def time_waco_org_id_for_name(name: str | None) -> str | None:
-    """Known Time Waco ID only — do not search-guess (live 34603-2)."""
-    blob = str(name or "").casefold()
-    if "time" in blob and "waco" in blob:
+    """Known Time Waco id only for the exact Sectura name."""
+    if str(name or "").strip().casefold() == TIME_WACO_ORG_NAME.casefold():
         return TIME_WACO_ORG_ID
     return None
+
+
+def rejected_time_org_name(name: str | None) -> bool:
+    """True for the duplicate label and other non-exact Time Waco strings."""
+    folded = str(name or "").strip().casefold()
+    if not folded or folded == TIME_WACO_ORG_NAME.casefold():
+        return False
+    if folded in {
+        "time manufacturing waco",
+        "time waco",
+        "time mfg waco",
+        "time mfg - waco",
+        "time mfg-waco",
+    }:
+        return True
+    return "time" in folded and "waco" in folded
 
 
 def leftover_org_empty_guid_after_bind_post_201_is_fail(
@@ -58,7 +79,11 @@ def quote_primary_organization_id(payload: dict[str, Any] | None) -> str:
     """GET PrimaryOrganizationID (OrganizationID / Organization.ID fallback)."""
     if not isinstance(payload, dict):
         return ""
-    raw = payload.get("PrimaryOrganizationID") or payload.get("OrganizationID")
+    raw = (
+        payload.get("PrimaryOrganizationID")
+        or payload.get("PrimaryOrganizationId")
+        or payload.get("OrganizationID")
+    )
     org = payload.get("Organization")
     if isinstance(org, dict):
         raw = raw or org.get("ID")
@@ -86,7 +111,12 @@ def org_guid_empty_after_stamp_is_fail(
         return False
     has_org_field = any(
         key in payload
-        for key in ("PrimaryOrganizationID", "OrganizationID", "Organization")
+        for key in (
+            "PrimaryOrganizationID",
+            "PrimaryOrganizationId",
+            "OrganizationID",
+            "Organization",
+        )
     )
     if not has_org_field:
         return False
@@ -153,6 +183,36 @@ def page_new_quote_header(detail: dict[str, Any] | None) -> bool:
     except (TypeError, ValueError):
         profit_ok = False
     return profit_ok and str(detail.get("QuoteStatus") or "") == "OPEN-NEW"
+
+
+def rest_mint_header_flag(detail: dict[str, Any] | None) -> str | None:
+    """None when the v1 read-back is ProfitModel 1 / OPEN-NEW.
+
+    The 2026-10-07 v2 create body is OrganizationId, Description, and
+    ExternalReference. The response is QuoteId only. v2 ``QuoteStatus``
+    is text and carries OPEN-NEW. ``Status`` is a separate enum and is
+    not that field. PUT /api/v1/quoteOnline/update does not list
+    ProfitModel or QuoteStatus. There is no supported call that sets the
+    page New Quote header, so a miss is flagged and not written.
+    """
+    if page_new_quote_header(detail if isinstance(detail, dict) else None):
+        return None
+    profit = None
+    status = None
+    if isinstance(detail, dict):
+        profit = detail.get("ProfitModel")
+        status = detail.get("QuoteStatus")
+        if status in (None, ""):
+            status = detail.get("Status")
+    return (
+        f"FLAG: REST mint read back ProfitModel {profit!r} / {status!r}. "
+        "POST /api/v2/quote does not set ProfitModel or QuoteStatus "
+        "(body is OrganizationId, Description, ExternalReference; "
+        "response is QuoteId only). v2 QuoteStatus is text and carries "
+        "OPEN-NEW. Status is a separate field. "
+        "PUT /api/v1/quoteOnline/update does not list ProfitModel or "
+        "QuoteStatus. No supported call sets ProfitModel 1 / OPEN-NEW."
+    )
 
 
 def org_autocomplete_search_only_is_fail(result: dict[str, Any] | None) -> bool:
@@ -293,24 +353,27 @@ def _stamp_time_waco_org(
     return notes
 
 
-def _org_blob(org: dict[str, Any]) -> str:
-    return " ".join(
-        str(org.get(k) or "")
-        for k in ("OrganizationName", "DisplayName", "NameAndLocation", "Name")
-    ).casefold()
+def _exact_org_names(org: dict[str, Any]) -> set[str]:
+    found: set[str] = set()
+    for key in ("OrganizationName", "DisplayName", "Name", "NameAndLocation"):
+        text = str(org.get(key) or "").strip()
+        if text:
+            found.add(text.casefold())
+    return found
 
 
-def list_organizations(client: SecturaFabClient) -> list[dict[str, Any]]:
-    """Page every org, then Search=Time/Waco — do not stop after the first page of others."""
+def list_organizations(
+    client: SecturaFabClient, *, name: str | None = None
+) -> list[dict[str, Any]]:
+    """Page the tenant list. An optional ``Name`` filter is the exact name."""
     found: list[dict[str, Any]] = []
     seen: set[str] = set()
-    queries = (
-        "v1/organization?PageNumber={page}&PageSize=100",
-        "v1/organization?PageNumber={page}&PageSize=100&Search=Time",
-        "v1/organization?PageNumber={page}&PageSize=100&Search=Waco",
-        "v1/organization?PageNumber={page}&PageSize=100&Search=TIME",
-        "v1/organization?PageNumber={page}&PageSize=100&Name=Time",
-    )
+    queries = ["v1/organization?PageNumber={page}&PageSize=100"]
+    exact = str(name or "").strip()
+    if exact:
+        queries.append(
+            "v1/organization?PageNumber={page}&PageSize=100&Name=" + quote(exact)
+        )
     for template in queries:
         page = 1
         while page <= 20:
@@ -335,62 +398,24 @@ def list_organizations(client: SecturaFabClient) -> list[dict[str, Any]]:
     return found
 
 
-def _score_organization(org: dict[str, Any], want: str) -> float:
-    blob = _org_blob(org)
-    if not blob:
-        return -1.0
-    target = (want or "").strip().casefold()
-    if not target:
-        return -1.0
-    if blob == target:
-        return 100.0
-    if target in blob:
-        return 90.0
-    if blob.startswith(target + " ") or blob.startswith(target + "-"):
-        return 85.0
-    tokens = [t for t in re.findall(r"[a-z0-9]+", target) if len(t) > 2]
-    score = 0.0
-    for tok in tokens:
-        if tok in blob:
-            score += 25.0
-        if tok == "time" and "time" in blob:
-            score += 20.0
-        if tok == "waco" and "waco" in blob:
-            score += 20.0
-    if org.get("Active") is False:
-        score -= 40.0
-    return score
-
-
 def find_organization_by_name(
     client: SecturaFabClient, name: str
 ) -> dict[str, Any] | None:
-    """
-    Return the tenant Organization that best matches ``name``.
+    """Return the tenant organization whose name equals ``name``.
 
-    Live Time tenant does not always expose the display string
-    ``Time Manufacturing Waco`` — list orgs and bind Time + Waco / Time Mfg.
+    Comparison is case-insensitive and exact. A partial name or a
+    ``Name - Location`` form is not a match.
     """
     target = (name or "").strip()
-    if not target:
+    if not target or rejected_time_org_name(target):
         return None
-    orgs = list_organizations(client)
-    if not orgs:
-        return None
-    aliases = [target]
-    lower = target.casefold()
-    if "time" in lower:
-        aliases.extend(["Time Waco", "Time Manufacturing", "Time", "Waco", "TIME"])
-    best = None
-    best_score = -1.0
-    for alias in aliases:
-        for org in orgs:
-            score = _score_organization(org, alias)
-            if score > best_score:
-                best, best_score = org, score
-    if not best or best_score < 40:
-        return None
-    return best
+    folded = target.casefold()
+    for org in list_organizations(client, name=target):
+        if not isinstance(org, dict):
+            continue
+        if folded in _exact_org_names(org):
+            return org
+    return None
 
 
 def apply_quote_organization(
@@ -411,25 +436,23 @@ def apply_quote_organization(
     if not name or not quote_id:
         return notes
 
-    want_time_waco = "time" in name.casefold() and "waco" in name.casefold()
-    if want_time_waco:
+    if rejected_time_org_name(name):
+        notes.append(
+            f"FLAG: '{name}' is not an exact Sectura organization name. "
+            f"Time Waco is '{TIME_WACO_ORG_NAME}' ({TIME_WACO_ORG_ID}), "
+            "resolved by GET /api/v2/organization/{id}. "
+            f"{EXACT_ORG_NAME_HINT}"
+        )
+        return notes
+    if name.casefold() == TIME_WACO_ORG_NAME.casefold():
         return _stamp_time_waco_org(
             client, quote_id, notes, description=description
         )
     org = find_organization_by_name(client, name)
     if not org or not org.get("ID") or org_empty_guid_is_fail(str(org.get("ID") or "")):
-        listed = list_organizations(client)
-        sample = ", ".join(
-            (
-                str(o.get("OrganizationName") or o.get("DisplayName") or o.get("ID") or "")
-                for o in listed[:8]
-            )
-        )
         notes.append(
-            f"WARNING: SecturaFAB Organization '{name}' not found in "
-            f"{len(listed)} tenant org(s)"
-            + (f" (e.g. {sample})" if sample else "")
-            + " — set dropdown manually"
+            f"FLAG: SecturaFAB Organization '{name}' matched no organization. "
+            f"{EXACT_ORG_NAME_HINT} Not creating an organization."
         )
         return notes
 
@@ -506,12 +529,8 @@ def apply_quote_organization(
             "is separate — org header FAIL"
         )
         return notes
-    if got_id == org_id or (
-        got
-        and (
-            got.casefold() == str(actual_name).casefold()
-            or "time" in got.casefold()
-        )
+    if (got_id and got_id.casefold() == org_id.casefold()) or (
+        got and got.casefold() == str(actual_name).casefold()
     ):
         notes.append(f"Set Organization: {got or actual_name} ({org_id})")
     else:

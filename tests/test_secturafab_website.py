@@ -8627,6 +8627,8 @@ def test_ensure_quote_edit_does_not_stomp_leftover_or_login():
         "secturafab.chrome_cdp.quotes_tab", return_value=leftover
     ), patch("secturafab.chrome_cdp.quotes_list_tab", return_value=None), patch(
         "secturafab.chrome_cdp.chrome_session_lost", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp._create_page_target", return_value=None
     ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
         assert _ensure_quote_edit_page(minted) is None
         gate = minted_edit_tab_ready(minted, navigate=True)
@@ -8644,6 +8646,97 @@ def test_ensure_quote_edit_does_not_stomp_leftover_or_login():
     assert lost["ok"] is False
     assert lost["reason"] == "session_lost"
     assert navigated == []
+
+
+def test_ensure_quote_edit_opens_its_own_tab_beside_another_edit():
+    """Another quote's editor is not a navigation target. Open a new tab."""
+    from secturafab.chrome_cdp import _ensure_quote_edit_page, _quote_edit_url
+
+    minted = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa2178"
+    leftover_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbb2178"
+    leftover = {
+        "type": "page",
+        "title": "*Quote-21785-1",
+        "url": f"https://www.secturafab.com/Quote/EDIT/{leftover_id}",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/leftover",
+    }
+    blank = {
+        "type": "page",
+        "title": "",
+        "url": "about:blank",
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9224/devtools/page/new",
+    }
+    navigated: list[tuple[str, str]] = []
+
+    def _call(ws_url, method, params=None, **kwargs):
+        if method == "Page.navigate":
+            url = str((params or {}).get("url") or "")
+            navigated.append((ws_url, url))
+            if "leftover" in ws_url:
+                raise AssertionError("must not write the other quote's tab")
+            return {}
+        return {}
+
+    def fake_edit(base=None, quote_id=None, quote_number=None):
+        qid = str(quote_id or "").strip().lower()
+        if not qid:
+            return leftover
+        if qid == leftover_id:
+            return leftover
+        return None
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", side_effect=fake_edit), patch(
+        "secturafab.chrome_cdp.quotes_list_tab", return_value=None
+    ), patch("secturafab.chrome_cdp.quotes_tab", return_value=leftover), patch(
+        "secturafab.chrome_cdp.chrome_session_lost", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp._create_page_target", return_value=dict(blank)
+    ) as created, patch(
+        "secturafab.chrome_cdp._wait_edit_id", return_value=True
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        tab = _ensure_quote_edit_page(minted)
+    assert tab is not None
+    assert tab["webSocketDebuggerUrl"].endswith("/new")
+    assert tab["url"] == _quote_edit_url(minted)
+    assert created.call_args.args[0] == _quote_edit_url(minted)
+    assert navigated == [
+        ("ws://127.0.0.1:9224/devtools/page/new", _quote_edit_url(minted))
+    ]
+
+    navigated.clear()
+
+    def _create_other(url, base=None):
+        return dict(leftover)
+
+    with patch("secturafab.chrome_cdp.quote_edit_tab", side_effect=fake_edit), patch(
+        "secturafab.chrome_cdp.quotes_list_tab", return_value=None
+    ), patch("secturafab.chrome_cdp.quotes_tab", return_value=leftover), patch(
+        "secturafab.chrome_cdp.chrome_session_lost", return_value=False
+    ), patch(
+        "secturafab.chrome_cdp._create_page_target", side_effect=_create_other
+    ), patch("secturafab.chrome_cdp.cdp_call", side_effect=_call):
+        assert _ensure_quote_edit_page(minted) is None
+    assert navigated == []
+
+
+def test_sectura_chrome_debug_port_is_authoritative(monkeypatch):
+    from secturafab.chrome_cdp import _debug_candidates
+
+    monkeypatch.delenv("CHROME_DEBUG_PORT", raising=False)
+    monkeypatch.setenv("SECTURA_CHROME_DEBUG", "9224")
+    assert _debug_candidates() == ["http://127.0.0.1:9224"]
+    monkeypatch.setenv("SECTURA_CHROME_DEBUG", "http://127.0.0.1:9224")
+    assert _debug_candidates() == ["http://127.0.0.1:9224"]
+    for blocked in ("9230", "9231", "9234", "http://127.0.0.1:9231"):
+        monkeypatch.setenv("SECTURA_CHROME_DEBUG", blocked)
+        assert _debug_candidates() == []
+    monkeypatch.delenv("SECTURA_CHROME_DEBUG")
+    fallback = _debug_candidates()
+    assert "http://127.0.0.1:9224" in fallback
+    for blocked in (9230, 9231, 9234):
+        assert f"http://127.0.0.1:{blocked}" not in fallback
+    monkeypatch.setenv("CHROME_DEBUG_PORT", "9224")
+    assert _debug_candidates() == ["http://127.0.0.1:9224"]
 
 
 def test_finish_cad_files_session_lost_does_not_upload(tmp_path: Path):
@@ -20127,7 +20220,7 @@ def test_finish_cad_files_exec_fail_when_get_org_empty_guid(tmp_path: Path):
             part_key="8679-1",
             explode_polls=1,
             explode_sleep_s=0,
-            organization_name="Time Manufacturing Waco",
+            organization_name="Time Manufacturing",
         )
     blob = " ".join(notes)
     assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob

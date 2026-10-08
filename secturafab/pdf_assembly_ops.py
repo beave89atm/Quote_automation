@@ -869,8 +869,15 @@ def _add_component_items(
     quote_id: str,
     rows: list[dict[str, Any]],
 ) -> list[str]:
-    detail = client.get_json(f"v1/quote/{quote_id}")
-    items = list(detail.get("ItemList") or [])
+    """Purchased kids via ``POST /api/v2/quote/{id}/add-manual-component-item``.
+
+    The body is part name, description, and quantity. Cost, price, and
+    weight are omitted — this path does not invent them. A full v1 quote
+    POST is not used, so OperationCostList on other lines is left alone.
+    The line is not parented here; assembly link stays on the existing step.
+    """
+    from .api_v2 import add_manual_component_item, build_manual_component_body
+
     added = 0
     for row in rows:
         part_no = str(row.get("part_no") or row.get("part_number") or "").strip()
@@ -881,29 +888,22 @@ def _add_component_items(
             qty = max(1, int(row.get("qty") or 1))
         except (TypeError, ValueError):
             qty = 1
-        items.append(
-            {
-                "ID": str(uuid.uuid4()),
-                "Description": noun[:500],
-                "Quantity": qty,
-                "ProductType": 200,
-                "ItemType": "Component",
-                "Category": "Component",
-                "IsLinear": False,
-                "IsPlate": False,
-                "IsPart": True,
-                "Machine": None,
-                "OperationCostList": [],
-            }
+        body = build_manual_component_body(
+            quantity=qty,
+            description=noun,
+            part_name=part_no,
         )
+        try:
+            add_manual_component_item(client, quote_id, body)
+        except SecturaFabApiError as exc:
+            return [f"Adding Component lines failed ({exc})"]
         added += 1
     if not added:
         return []
-    detail["ItemList"] = items
-    save = client.request("POST", "v1/quote", json=detail)
-    if save.status_code >= 400:
-        return [f"Adding Component lines failed ({save.status_code})"]
-    return [f"Added {added} purchased Component line(s) (name only)"]
+    return [
+        f"Added {added} purchased Component line(s) via add-manual-component-item "
+        "(name, part number, qty only)"
+    ]
 
 
 def _apply_item_descriptions(

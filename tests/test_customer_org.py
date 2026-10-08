@@ -64,14 +64,14 @@ def test_detect_time_manufacturing_waco():
         r"C:\Users\Kyle\Kannon Manufacturing Inc\Fort Worth - Documents"
         r"\Engineering\Customer Drawings\Time\Pedestal Weldment - 1001898-1"
     )
-    assert detect_organization_from_folder(folder) == "Time Manufacturing Waco"
+    assert detect_organization_from_folder(folder) == "Time Manufacturing"
     assert detect_organization_from_text("TIME MANUFACTURING\n1001898") == (
-        "Time Manufacturing Waco"
+        "Time Manufacturing"
     )
     assert detect_organization(
         library_folder="Pedestal Weldment - 1001898-1",
         extra_paths=[folder],
-    ) == "Time Manufacturing Waco"
+    ) == "Time Manufacturing"
 
 
 def test_detect_organization_from_library_folder():
@@ -111,26 +111,28 @@ def test_find_organization_by_name_matches_display():
     assert org["ID"] == "abc"
 
 
-def test_find_organization_fuzzy_time_waco_when_display_differs():
+def test_find_organization_is_exact_and_rejects_the_duplicate_name():
     client = MagicMock()
     client.get_json.return_value = {
         "HasNext": False,
         "Results": [
             {
-                "ID": "time-real",
-                "OrganizationName": "Time Mfg - Waco",
-                "DisplayName": "Time Mfg - Waco",
+                "ID": "duplicate",
+                "OrganizationName": "Time Manufacturing Waco",
+                "DisplayName": "Time Manufacturing Waco",
                 "Active": True,
             },
             {
-                "ID": "other",
-                "OrganizationName": "Propell",
-                "DisplayName": "Propell",
+                "ID": "time-real",
+                "OrganizationName": "Time Manufacturing",
+                "DisplayName": "Time Manufacturing",
                 "Active": True,
             },
         ],
     }
-    org = find_organization_by_name(client, "Time Manufacturing Waco")
+    assert find_organization_by_name(client, "Time Manufacturing Waco") is None
+    assert find_organization_by_name(client, "Time Mfg - Waco") is None
+    org = find_organization_by_name(client, "time manufacturing")
     assert org is not None
     assert org["ID"] == "time-real"
 
@@ -209,7 +211,7 @@ def test_apply_time_waco_binds_known_id_without_org_search():
 
     with patch("secturafab.chrome_cdp.chrome_edit_signed_in", return_value=False):
         notes = apply_quote_organization(
-            client, "qid", organization_name="Time Manufacturing Waco"
+            client, "qid", organization_name="Time Manufacturing"
         )
     assert any("Set Organization:" in n and TIME_WACO_ORG_ID in n for n in notes)
     # GET already has Time Waco — do not POST v1/quote (live 6d4373bc wipe).
@@ -237,7 +239,7 @@ def test_apply_time_waco_empty_guid_is_fail():
 
     with patch("secturafab.chrome_cdp.chrome_edit_signed_in", return_value=False):
         notes = apply_quote_organization(
-            client, "qid", organization_name="Time Manufacturing Waco"
+            client, "qid", organization_name="Time Manufacturing"
         )
     blob = " ".join(notes)
     assert "empty GUID" in blob
@@ -252,8 +254,10 @@ def test_apply_time_waco_empty_guid_is_fail():
 
 
 def test_time_waco_org_id_for_name_and_leftover_6d4373bc():
-    assert time_waco_org_id_for_name("Time Manufacturing Waco") == TIME_WACO_ORG_ID
-    assert time_waco_org_id_for_name("TIME WACO") == TIME_WACO_ORG_ID
+    assert time_waco_org_id_for_name("Time Manufacturing") == TIME_WACO_ORG_ID
+    assert time_waco_org_id_for_name("time manufacturing") == TIME_WACO_ORG_ID
+    assert time_waco_org_id_for_name("Time Manufacturing Waco") is None
+    assert time_waco_org_id_for_name("TIME WACO") is None
     assert time_waco_org_id_for_name("Propell") is None
     assert org_empty_guid_after_bind_post_is_fail(EMPTY_GUID, post_status=201) is True
     assert org_empty_guid_after_bind_post_is_fail(TIME_WACO_ORG_ID, post_status=201) is False
@@ -310,7 +314,7 @@ def test_apply_time_waco_retry_slim_post_sticks():
 
     with patch("secturafab.chrome_cdp.chrome_edit_signed_in", return_value=False):
         notes = apply_quote_organization(
-            client, "qid", organization_name="Time Manufacturing Waco"
+            client, "qid", organization_name="Time Manufacturing"
         )
     assert any("Set Organization:" in n and TIME_WACO_ORG_ID in n for n in notes)
     assert client.request.call_count == 2
@@ -324,16 +328,32 @@ def test_create_quote_stamps_time_waco_on_mint_and_strip():
     from secturafab.push import SecturaFabPushService
 
     client = MagicMock()
-    client.get_json.return_value = {
-        "ID": "new-qid",
-        "ProfitModel": 1,
-        "QuoteStatus": "OPEN-NEW",
-        "PrimaryOrganizationID": TIME_WACO_ORG_ID,
-        "OrganizationID": TIME_WACO_ORG_ID,
-    }
+
+    def _get(path, **_kwargs):
+        assert "organization/lookup" not in str(path)
+        if f"v2/organization/{TIME_WACO_ORG_ID}" in str(path):
+            return {
+                "Data": {
+                    "OrganizationId": TIME_WACO_ORG_ID,
+                    "Name": "Time Manufacturing",
+                }
+            }
+        return {
+            "ID": "new-qid",
+            "ProfitModel": 1,
+            "QuoteStatus": "OPEN-NEW",
+            "PrimaryOrganizationID": TIME_WACO_ORG_ID,
+            "OrganizationID": TIME_WACO_ORG_ID,
+        }
+
+    client.get_json.side_effect = _get
+    client.post_json.return_value = {"Data": {"QuoteId": "new-qid"}}
     with patch(
         "secturafab.chrome_cdp.page_create_quote",
-        return_value={"ok": True, "quote_id": "new-qid", "via": "GET /quote/create"},
+        side_effect=AssertionError("page create"),
+    ), patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": {}},
     ), patch(
         "secturafab.page_weld.set_page_quote_number",
         return_value=["QuoteNumber set via UpdatePropertyValue"],
@@ -346,18 +366,22 @@ def test_create_quote_stamps_time_waco_on_mint_and_strip():
             "ok": True,
             "via": "OrganizationDetail",
             "search": False,
-            "org_id": "bound",
+            "org_id": TIME_WACO_ORG_ID,
         },
     ) as bound:
         quote_id = SecturaFabPushService(client=client).create_quote(
             quote_number="21684-1",
             description="TUBE, CYLINDER ANCHOR",
-            organization_name="Time Manufacturing Waco",
+            organization_name="Time Manufacturing",
         )
     assert quote_id == "new-qid"
-    assert bound.call_args.kwargs["org_name"] == "Time Manufacturing Waco"
+    assert bound.call_args.kwargs["org_name"] == "Time Manufacturing"
+    assert bound.call_args.kwargs["org_id"] == TIME_WACO_ORG_ID
+    body = client.post_json.call_args.args[1]
+    assert body["OrganizationId"] == TIME_WACO_ORG_ID
+    assert "OrganizationName" not in body
+    assert "LocationName" not in body
     client.request.assert_not_called()
-    client.get_json.assert_called_once()
 
 
 def test_create_quote_slim_stamps_when_mint_get_org_empty():
@@ -365,14 +389,27 @@ def test_create_quote_slim_stamps_when_mint_get_org_empty():
     from secturafab.push import SecturaFabPushService
 
     client = MagicMock()
-    client.get_json.return_value = {
-        "ProfitModel": 0,
-        "QuoteStatus": "OPEN-DRAFT",
-        **leftover_org_empty_guid_get(),
-    }
+
+    def _get(path, **_kwargs):
+        assert "organization/lookup" not in str(path)
+        if f"v2/organization/{TIME_WACO_ORG_ID}" in str(path):
+            return {
+                "Data": {
+                    "OrganizationId": TIME_WACO_ORG_ID,
+                    "Name": "Time Manufacturing",
+                }
+            }
+        return {
+            "ProfitModel": 0,
+            "QuoteStatus": "OPEN-DRAFT",
+            **leftover_org_empty_guid_get(),
+        }
+
+    client.get_json.side_effect = _get
+    client.post_json.return_value = {"Data": {"QuoteId": "new-qid"}}
     with patch(
-        "secturafab.chrome_cdp.page_create_quote",
-        return_value={"ok": True, "quote_id": "new-qid", "via": "GET /quote/create"},
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": {}},
     ), patch(
         "secturafab.page_weld.set_page_quote_number",
         return_value=["QuoteNumber set via UpdatePropertyValue"],
@@ -385,13 +422,13 @@ def test_create_quote_slim_stamps_when_mint_get_org_empty():
             "ok": True,
             "via": "OrganizationDetail",
             "search": False,
-            "org_id": "bound",
+            "org_id": TIME_WACO_ORG_ID,
         },
     ), pytest.raises(SecturaFabApiError, match="OPEN-NEW"):
         SecturaFabPushService(client=client).create_quote(
             quote_number="21684-1",
             description="TUBE, CYLINDER ANCHOR",
-            organization_name="Time Manufacturing Waco",
+            organization_name="Time Manufacturing",
         )
     client.request.assert_not_called()
 
@@ -413,7 +450,7 @@ def test_apply_time_waco_prefers_quotes_ui_bind_not_search():
         "secturafab.chrome_cdp.bind_quote_organization", return_value=bind
     ) as bind_fn:
         notes = apply_quote_organization(
-            client, "qid", organization_name="Time Manufacturing Waco"
+            client, "qid", organization_name="Time Manufacturing"
         )
     bind_fn.assert_called_once()
     assert bind_fn.call_args.kwargs["org_id"] == TIME_WACO_ORG_ID

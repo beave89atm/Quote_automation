@@ -105,7 +105,7 @@ def _saw_primary_costs(item_id: str) -> list[dict[str, Any]]:
         },
     ]
 
-TIME_ORG = "Time Manufacturing Waco"
+TIME_ORG = "Time Manufacturing"
 TIME_ORG_ID = "b7dbc294-3fd2-43aa-99be-268a6c4fce14"
 ASSEMBLY_DESC = format_assembly_description("1001898-1", "PEDESTAL WELDMENT")
 HEADER_DESC = format_quote_header_description("PEDESTAL WELDMENT", part_key="1001898-1")

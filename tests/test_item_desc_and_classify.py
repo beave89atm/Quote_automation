@@ -142,9 +142,9 @@ def test_time_org_and_pedestal_folder_title():
         r"C:\Users\Kyle\Kannon Manufacturing Inc\Fort Worth - Documents"
         r"\Engineering\Customer Drawings\Time\Pedestal Weldment - 1001898-1"
     )
-    assert detect_organization_from_folder(folder) == "Time Manufacturing Waco"
+    assert detect_organization_from_folder(folder) == "Time Manufacturing"
     assert detect_organization(pdf_path=None, library_folder=folder) == (
-        "Time Manufacturing Waco"
+        "Time Manufacturing"
     )
     assert detect_organization(
         pdf_path=None,
@@ -153,7 +153,7 @@ def test_time_org_and_pedestal_folder_title():
             r"C:\Users\Kyle\Kannon Manufacturing Inc\Fort Worth - Documents"
             r"\Engineering\Customer Drawings\Time"
         ],
-    ) == "Time Manufacturing Waco"
+    ) == "Time Manufacturing"
     assert title_from_library_folder(folder, part_key="1001898-1") == "PEDESTAL WELDMENT"
     assert title_from_library_folder(
         "Pedestal Weldment - 1001898-1", part_key="1001898-1"
@@ -253,7 +253,7 @@ def test_cookie_less_push_does_not_graft_profile(tmp_path: Path):
         return_value=["Imported Cad", "Skipped grafted Profile"],
     ), patch(
         "secturafab.push.apply_quote_organization",
-        return_value=["Set Organization: Time Manufacturing Waco"],
+        return_value=["Set Organization: Time Manufacturing"],
     ):
         result = service.push_job(
             title="1001898",
@@ -278,9 +278,9 @@ def test_cookie_less_push_does_not_graft_profile(tmp_path: Path):
     assert "Chrome" in blob or "session" in blob.lower()
     assert "falling back" not in blob
     assert any(
-        "Time Manufacturing Waco" in n or "Organization" in n or "Set Organization" in n
+        "Time Manufacturing" in n or "Organization" in n or "Set Organization" in n
         for n in (result.notes or [])
-    ) or detect_organization(library_folder=lib) == "Time Manufacturing Waco"
+    ) or detect_organization(library_folder=lib) == "Time Manufacturing"
 
 
 def test_plate_catalog_grade_and_match():
@@ -683,9 +683,9 @@ def test_qa_fail_closes_leftover_misclassify():
 
     payload = {
         "Description": "PEDESTAL WELDMENT",
-        "OrganizationName": "Time Manufacturing Waco",
+        "OrganizationName": "Time Manufacturing",
         "PrimaryOrganizationID": "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
-        "OrganizationList": [{"OrganizationName": "Time Manufacturing Waco"}],
+        "OrganizationList": [{"OrganizationName": "Time Manufacturing"}],
         "ItemList": [
             {
                 "ID": "asm",

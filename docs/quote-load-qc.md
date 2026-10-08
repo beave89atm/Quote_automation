@@ -18,7 +18,7 @@ Owner: Quote Automation PO. Draft 2, Mon 9/28/2026. Checker and session guard: `
 
 ## 2. PDF vs STEP path
 - STEP present: use the CAD Files path (section 3).
-- PDF only: `secturafab/chrome_cdp.py upload_pdf_via_page_add_files`, then `stamp_pdf_kendo_flats`, then `invoke_page_pdf_finish` (template `/workspace/inbox-eod/live_mint_crossdrain_image_files.py`, box CDP `SECTURA_CHROME_DEBUG=http://127.0.0.1:9231`). Tubes/bars go through Long (`/Quote/AddItem_Linear`).
+- PDF only: `secturafab/chrome_cdp.py upload_pdf_via_page_add_files`, then `stamp_pdf_kendo_flats`, then `invoke_page_pdf_finish` (template `/workspace/inbox-eod/live_mint_crossdrain_image_files.py`). `SECTURA_CHROME_DEBUG` must be set. On this box it is `http://127.0.0.1:9224`, and that value is the only DevTools port used. Never use 9230, 9231, or 9234. Tubes/bars go through Long (`/Quote/AddItem_Linear`).
 - **Upload limit 32 MB.** Check file size before upload. Over the limit: FLAG (split per part or ask for a smaller file). Never let a truncated upload through.
 
 ## 3. STEP explode / assembly structure

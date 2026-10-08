@@ -572,7 +572,7 @@ def _default_reader(quote_id: str) -> Any:
         page_jquery_ajax,
     )
 
-    gate = minted_edit_tab_ready(str(quote_id), navigate=True)
+    gate = minted_edit_tab_ready(str(quote_id), navigate=True, operation="read")
     if not gate.get("ok"):
         why = str(gate.get("reason") or "edit_tab_missing")
         if why in {"session_lost", "no_sectura_tab"}:

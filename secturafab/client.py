@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -58,6 +60,79 @@ class SecturaFabApiError(RuntimeError):
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+
+
+def sectura_error_detail(body: Any) -> str:
+    """``Error.Name`` and ``Error.Description`` from a v2 envelope.
+
+    Older bodies still contribute ``ExceptionMessage``, ``detail``,
+    ``Message``, or ``title`` when the v2 error object is absent.
+    """
+    if isinstance(body, str):
+        return body.strip()[:500]
+    if not isinstance(body, dict):
+        return ""
+    err = body.get("Error")
+    if isinstance(err, dict):
+        name = str(err.get("Name") or "").strip()
+        desc = str(err.get("Description") or "").strip()
+        parts: list[str] = []
+        if name:
+            parts.append(f"Error.Name={name}")
+        if desc:
+            parts.append(f"Error.Description={desc}")
+        if parts:
+            return "; ".join(parts)
+    for key in ("ExceptionMessage", "detail", "Message", "title"):
+        if body.get(key):
+            return str(body.get(key)).strip()[:500]
+    return ""
+
+
+_ORG_CUSTOMER_CREATE_RE = re.compile(
+    r"(?:^|/)(?:api/)?(?:v[0-2]/)?(?:organization|organizations|customer|customers)"
+    r"(?:/(?:create|add|new))?/?$",
+    re.IGNORECASE,
+)
+_ORG_CUSTOMER_CREATE_HINTS = (
+    "/organization/create",
+    "/customer/create",
+    "/organization/add",
+    "/customer/add",
+    "/organization/new",
+    "/customer/new",
+    "createorganization",
+    "createcustomer",
+    "addorganization",
+    "addcustomer",
+)
+
+
+def is_organization_or_customer_create(method: str, path: str) -> bool:
+    """True when this call would create an organization or customer."""
+    verb = str(method or "").strip().upper()
+    if verb in {"", "GET", "HEAD", "OPTIONS"}:
+        return False
+    raw = str(path or "").strip()
+    if "://" in raw:
+        raw = urlparse(raw).path or ""
+    raw = raw.split("?", 1)[0].rstrip("/")
+    if _ORG_CUSTOMER_CREATE_RE.search(raw):
+        return True
+    compact = raw.lower()
+    return any(hint in compact for hint in _ORG_CUSTOMER_CREATE_HINTS)
+
+
+def refuse_organization_or_customer_create(method: str, path: str) -> None:
+    """Stop before HTTP. A lookup miss must not create an organization."""
+    if not is_organization_or_customer_create(method, path):
+        return
+    raise SecturaFabApiError(
+        "FLAG: refusing to create an organization or customer "
+        f"({str(method or '').upper()} {path}). "
+        "A lookup miss stops the push. "
+        "Not creating an organization or customer."
+    )
 
 
 class SecturaFabClient:
@@ -119,6 +194,7 @@ class SecturaFabClient:
         allow_absolute: bool = False,
         retry_on_auth_error: bool = True,
     ) -> requests.Response:
+        refuse_organization_or_customer_create(method, path)
         try:
             refuse_forbidden_quote_write(
                 method=method,
@@ -215,6 +291,7 @@ class SecturaFabClient:
         `files` entries are requests-style:
           ("files", (filename, fileobj, content_type))
         """
+        refuse_organization_or_customer_create("POST", path)
         token = self.authenticate()
         url = f"{self.config.api_root}/{path.lstrip('/')}"
         req_headers = {
@@ -347,6 +424,7 @@ class SecturaFabClient:
         Image Files (AddItem_PDFFiles) and Long (AddItem_Linear) are tried
         with bearer on every origin; a 302 is not an excuse to ship empty packs.
         """
+        refuse_organization_or_customer_create(method, path)
         try:
             refuse_forbidden_quote_write(
                 method=method,
@@ -2427,6 +2505,7 @@ class SecturaFabClient:
             method="POST",
             data=payload,
             quote_id=quote_id,
+            operation="nest",
         )
         status = int(result.get("status") or 0) if isinstance(result, dict) else 0
         if not (
@@ -2461,12 +2540,9 @@ class SecturaFabClient:
                 body = response.json()
             except ValueError:
                 body = response.text[:1000]
-            detail = ""
-            if isinstance(body, dict):
-                for key in ("ExceptionMessage", "detail", "Message", "title"):
-                    if body.get(key):
-                        detail = f" — {body.get(key)}"
-                        break
+            detail = sectura_error_detail(body)
+            if detail:
+                detail = f" — {detail}"
             raise SecturaFabApiError(
                 f"API request failed ({response.status_code}) for {response.url}{detail}",
                 status_code=response.status_code,
