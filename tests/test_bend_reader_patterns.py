@@ -13,7 +13,7 @@ import pytest
 
 from quote_core.bend_conventions import detect_bends
 from secturafab.flat_pattern import _bare_inches, _join_stacked_fraction_blocks, evaluate_formed, read_bends
-from secturafab.pdf_only import plan_pdf_only_file, plan_pdf_only_part
+from secturafab.pdf_only import _pdf_text_and_vectors, plan_pdf_only_file, plan_pdf_only_part
 
 _PLATE = "\n".join(
     [
@@ -1088,6 +1088,11 @@ def test_plain_corner_radius_is_not_a_bent_tube():
     assert plan.route == "image_files"
     assert "tube or round-stock" not in " ".join(plan.notes)
 
+    # A 1.000 dimension next to a corner radius is still a plate.
+    inch = "\n".join(["SAMPLE PLATE", "PLATE", "1.000", "R1.38"])
+    inch_plan = plan_pdf_only_part(text=inch, title="SAMPLE PLATE")
+    assert "tube or round-stock" not in " ".join(inch_plan.notes)
+
     bare = "\n".join(["ROUND BAR", "R5.91", "2.00"])
     bare_plan = plan_pdf_only_part(text=bare, title="ROUND BAR")
     assert "tube or round-stock" not in " ".join(bare_plan.notes)
@@ -1130,3 +1135,290 @@ def test_r_decimal_and_tube_leg_degrees_flag_as_formed():
     word = plan_pdf_only_part(text=called, title="BENT TUBE")
     assert word.route == "refuse"
     assert word.route != "long"
+
+
+def _arrow_poly(tip: tuple[float, float], direction: tuple[float, float]) -> list[fitz.Point]:
+    dx, dy = direction
+    base = fitz.Point(tip[0] - dx * 9.5, tip[1] - dy * 9.5)
+    px, py = -dy * 1.45, dx * 1.45
+    return [
+        fitz.Point(*tip),
+        fitz.Point(base.x + px, base.y + py),
+        fitz.Point(base.x - px, base.y - py),
+    ]
+
+
+def test_push_path_reads_a_line_grouped_stacked_fraction(tmp_path: Path):
+    """Whole number and numerator share one PDF line. The denominator is the next line.
+
+    PyMuPDF groups those spans into one line. The push path has to keep the
+    spans, or the size collapses to the denominator.
+    """
+    path = tmp_path / "stacked-flat.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_font(fontname="helv", fontbuffer=fitz.Font("helv").buffer)
+    shape = page.new_shape()
+    # 12 3/8 x 4.50 in at 18 pt/in. The sheet frame is not the part.
+    shape.draw_rect(fitz.Rect(16, 16, 596, 776))
+    shape.finish(width=0.72, color=(0, 0, 0))
+    shape.draw_rect(fitz.Rect(180, 210, 402.75, 291))
+    shape.finish(width=0.72, color=(0, 0, 0))
+    shape.draw_line(fitz.Point(180, 190), fitz.Point(245, 190))
+    shape.draw_line(fitz.Point(402.75, 190), fitz.Point(310, 190))
+    shape.draw_line(fitz.Point(155, 210), fitz.Point(155, 240))
+    shape.draw_line(fitz.Point(155, 291), fitz.Point(155, 265))
+    shape.finish(width=0.58, color=(0, 0, 0))
+    shape.draw_line(fitz.Point(264, 195), fitz.Point(276, 195))
+    shape.finish(width=0.40, color=(0, 0, 0))
+    for tip, direction in (
+        ((180, 190), (-1, 0)),
+        ((402.75, 190), (1, 0)),
+        ((155, 210), (0, -1)),
+        ((155, 291), (0, 1)),
+    ):
+        shape.draw_polyline(_arrow_poly(tip, direction))
+        shape.finish(width=0, color=(0, 0, 0), fill=(0, 0, 0), closePath=True)
+    shape.commit()
+    # One text object puts "12" and "3" on the same extracted line. "8" is the next line.
+    page.wrap_contents()
+    xref = page.get_contents()[0]
+    doc.update_stream(
+        xref,
+        doc.xref_stream(xref)
+        + b"""
+BT
+/helv 10 Tf
+248 651 Td
+(12) Tj
+16 0 Td
+(3) Tj
+ET
+BT
+/helv 8 Tf
+266 637 Td
+(8) Tj
+ET
+BT
+/helv 10 Tf
+122 584 Td
+(4.50) Tj
+ET
+BT
+/helv 12 Tf
+220 470 Td
+(FLAT PATTERN) Tj
+ET
+BT
+/helv 10 Tf
+72 740 Td
+(PLATE) Tj
+0 -16 Td
+(0.125) Tj
+0 -16 Td
+(A36) Tj
+ET
+""",
+    )
+    page.insert_text((72, 100), "UP 90° R.13", fontsize=10)
+    page.insert_text((72, 116), "DOWN 90° R.13", fontsize=10)
+    doc.save(path)
+    doc.close()
+
+    raw = fitz.open(path)
+    try:
+        joined = []
+        for block in (raw[0].get_text("dict") or {}).get("blocks") or []:
+            if block.get("type") != 0:
+                continue
+            for line in block.get("lines") or []:
+                joined.append("".join(span.get("text") or "" for span in line.get("spans") or []))
+    finally:
+        raw.close()
+    assert any("12" in piece and "3" in piece and "8" not in piece for piece in joined)
+    assert any(piece.strip() == "8" for piece in joined)
+
+    _text, _drawings, blocks = _pdf_text_and_vectors(path)
+    span_text = [str(block["text"]).strip() for block in blocks]
+    assert "12" in span_text
+    assert "3" in span_text
+    assert "8" in span_text
+    assert not any("12" in piece and "3" in piece for piece in span_text)
+
+    plan = plan_pdf_only_file(path, title="SAMPLE BRACKET")
+    assert plan.route == "image_files"
+    assert plan.flat_source == "drawing flat pattern"
+    assert plan.width_in == pytest.approx(12.375)
+    assert plan.length_in == pytest.approx(4.50)
+    assert plan.width_in != pytest.approx(8)
+    assert plan.length_in != pytest.approx(8)
+    assert plan.width_in != pytest.approx(3)
+
+
+def test_outline_matched_one_inch_side_is_a_blank():
+    """A 4 x 1 flat that matches the outline is the part, not a 1 x N page outline."""
+    part = (200.0, 220.0, 272.0, 238.0)  # 72 x 18 pt = 4 x 1 in at 18 pt/in
+    arrows = []
+    arrows.extend(_arrowhead((200.0, 200.0), (-1.0, 0.0)))
+    arrows.extend(_arrowhead((272.0, 200.0), (1.0, 0.0)))
+    arrows.extend(_arrowhead((180.0, 220.0), (0.0, -1.0)))
+    arrows.extend(_arrowhead((180.0, 238.0), (0.0, 1.0)))
+    drawings = [
+        _part_and_frame(part),
+        _dim_stroke(
+            [
+                ("l", (200.0, 200.0), (220.0, 200.0)),
+                ("l", (272.0, 200.0), (250.0, 200.0)),
+                ("l", (180.0, 220.0), (180.0, 226.0)),
+                ("l", (180.0, 238.0), (180.0, 232.0)),
+            ]
+        ),
+        {"type": "f", "width": 0, "page_rect": (0, 0, 612, 792), "items": arrows},
+    ]
+    blocks = [
+        {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (200, 280, 320, 296)},
+        {"text": "4.00", "dir": (1, 0), "bbox": (220, 186, 250, 200)},
+        {"text": "1.00", "dir": (1, 0), "bbox": (148, 224, 176, 238)},
+    ]
+    decision = evaluate_formed(
+        _formed_plate("UP 90° R.13", "UP 90° R.13", "FLAT PATTERN", "4.00", "1.00"),
+        thickness_in=0.125,
+        drawings=drawings,
+        text_blocks=blocks,
+    )
+    assert decision is not None
+    assert decision.flag is None
+    assert decision.length_source == "drawing flat pattern"
+    assert decision.width_in == pytest.approx(4.0)
+    assert decision.developed_length_in == pytest.approx(1.0)
+
+    # A 1 x 16 pair that is not measured on the part outline stays rejected.
+    rejected = evaluate_formed(
+        _formed_plate("UP 90° R.13", "FLAT PATTERN", "1.00", "16.00"),
+        thickness_in=0.125,
+        text_blocks=[
+            {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (100, 100, 220, 116)},
+            {"text": "1.00", "dir": (1, 0), "bbox": (100, 140, 140, 154)},
+            {"text": "16.00", "dir": (0, 1), "bbox": (40, 140, 54, 220)},
+        ],
+    )
+    assert rejected is not None
+    assert rejected.length_source != "drawing flat pattern"
+    assert rejected.width_in != pytest.approx(1.0)
+    assert rejected.developed_length_in != pytest.approx(16.0)
+
+
+def test_short_dash_bends_in_two_directions_stay_flagged():
+    drawings = [
+        {"dashes": "[3.6 1.8] 0", "items": [("l", (40, 160), (420, 160))]},
+        {"dashes": "[] 0", "width": 0.51, "items": [("l", (220, 40), (220, 400))]},
+    ]
+    blocks = [
+        {"text": "UP 90° R.25", "dir": (1, 0), "bbox": (80, 148, 190, 162)},
+        {"text": "DOWN 90° R.25", "dir": (1, 0), "bbox": (196, 200, 310, 214)},
+        {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (80, 430, 220, 446)},
+    ]
+    text = _formed_plate(
+        "UP 90° R.25",
+        "DOWN 90° R.25",
+        "FLAT PATTERN",
+        "8.00 X 3.00",
+    )
+    decision = evaluate_formed(
+        text,
+        thickness_in=0.125,
+        drawings=drawings,
+        text_blocks=blocks,
+    )
+    assert decision is not None
+    assert decision.flag == "bends in two planes, review"
+    assert decision.developed_length_in is None
+    assert decision.width_in is None
+    assert "bend count 2" in decision.line_note
+    assert "8" in decision.line_note
+    assert "3" in decision.line_note
+
+    plan = plan_pdf_only_part(
+        text=text,
+        title="SAMPLE BOX",
+        drawings=drawings,
+        text_blocks=blocks,
+    )
+    notes = " ".join(plan.notes)
+    assert plan.route == "refuse"
+    assert plan.route != "image_files"
+    assert plan.width_in is None
+    assert "bends in two planes, review" in notes
+    assert "bend count 2" in notes
+
+
+def test_thick_round_stock_radius_flags_formed_on_the_push_path(tmp_path: Path):
+    path = tmp_path / "bent-round.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "SHEET 1")
+    page.insert_text((72, 96), "MATERIAL")
+    page.insert_text((72, 112), "2.00")
+    page.insert_text((72, 140), "R5.91")
+    doc.save(path)
+    doc.close()
+    plan = plan_pdf_only_file(path, title="BENT ROUND")
+    notes = " ".join(plan.notes)
+    assert plan.route == "refuse"
+    assert plan.route != "image_files"
+    assert plan.route != "long"
+    assert plan.bend_count in (None, 0)
+    assert "tube or round-stock bend notes are formed evidence" in notes
+    assert "over 3/4" not in notes
+
+
+def test_flat_pattern_page_without_arrows_is_template_wording():
+    blocks = [
+        {"text": "FLAT PATTERN VIEW", "dir": (1, 0), "bbox": (72, 72, 220, 88), "page": 0},
+        {"text": "3.89", "dir": (1, 0), "bbox": (80, 200, 120, 214), "page": 0},
+        {"text": "36", "dir": (1, 0), "bbox": (90, 360, 120, 374), "page": 0},
+        {"text": "11 X 17", "dir": (1, 0), "bbox": (400, 520, 480, 534), "page": 0},
+    ]
+    drawings = [
+        {
+            "type": "s",
+            "width": 0.51,
+            "dashes": "[] 0",
+            "page": 0,
+            "page_rect": (0, 0, 792, 612),
+            "items": [
+                ("l", (12, 12), (780, 12)),
+                ("l", (780, 12), (780, 600)),
+                ("l", (780, 600), (12, 600)),
+                ("l", (12, 600), (12, 12)),
+            ],
+        }
+    ]
+    text = "\n".join(
+        [
+            _PLATE,
+            "FLAT PATTERN VIEW",
+            "3.89",
+            "36",
+            "11 X 17",
+        ]
+    )
+    decision = evaluate_formed(
+        text,
+        thickness_in=0.25,
+        drawings=drawings,
+        text_blocks=blocks,
+    )
+    assert decision is not None
+    assert decision.flag == "template wording only, review"
+    assert decision.flag_field == "review"
+    plan = plan_pdf_only_part(
+        text=text,
+        title="SAMPLE PLATE",
+        drawings=drawings,
+        text_blocks=blocks,
+    )
+    notes = " ".join(plan.notes)
+    assert plan.route == "refuse"
+    assert "template wording only, review" in notes
+    assert "formed evidence" not in notes

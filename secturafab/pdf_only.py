@@ -308,13 +308,18 @@ def plan_pdf_only_part(
         if decision is None:
             return None
         if decision.flag:
+            recorded = (decision.line_note,) if decision.line_note else ()
             return PdfOnlyPlan(
                 route="refuse",
                 missing=(decision.flag_field,),
                 description=description,
                 material=None if grade.blocks else material,
                 thickness_in=float(thickness_in) if thickness_in is not None else None,
-                notes=_with_grade(grade, _flag(decision.flag_field, decision.flag)),
+                notes=_with_grade(
+                    grade,
+                    _flag(decision.flag_field, decision.flag),
+                    *recorded,
+                ),
             )
         if grade.blocks:
             return _blocked_grade()
@@ -530,17 +535,28 @@ def _pdf_text_and_vectors(path: Path) -> tuple[str, list | None, list | None]:
                 if block.get("type") != 0:
                     continue
                 for line in block.get("lines") or []:
-                    text = "".join(span.get("text") or "" for span in line.get("spans") or [])
-                    if not text.strip():
-                        continue
-                    blocks.append(
-                        {
-                            "text": text,
-                            "dir": tuple(line.get("dir") or (1, 0)),
-                            "bbox": tuple(line.get("bbox") or ()),
-                            "page": page.number,
-                        }
-                    )
+                    # One block per span. A line join merges a stacked
+                    # fraction into "44 1" over "16", and the reader then
+                    # sees only the denominator.
+                    direction = tuple(line.get("dir") or (1, 0))
+                    for span in line.get("spans") or []:
+                        text = span.get("text") or ""
+                        if not text.strip():
+                            continue
+                        raw_box = span.get("bbox") or line.get("bbox") or ()
+                        try:
+                            box = tuple(float(value) for value in raw_box)
+                        except (TypeError, ValueError):
+                            box = tuple(raw_box)
+                        blocks.append(
+                            {
+                                "text": text,
+                                "dir": direction,
+                                "bbox": box,
+                                "size": span.get("size"),
+                                "page": page.number,
+                            }
+                        )
         return "\n".join(texts), drawings, blocks
     finally:
         doc.close()

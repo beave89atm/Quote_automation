@@ -404,14 +404,16 @@ def _near_perpendicular(left: float, right: float) -> bool:
 def _drawing_segments(
     drawings: list[dict[str, Any]] | None,
 ) -> list[tuple[float, float, float, float, float, str]]:
-    """Long strokes as (x1, y1, x2, y2, length, dash kind). Hidden lines are out."""
+    """Long strokes as (x1, y1, x2, y2, length, dash kind).
+
+    Short even dashes (hidden-line style) stay in. A bend note has to sit
+    on one before it counts, so a hole mark with no note does not.
+    """
     found: list[tuple[float, float, float, float, float, str]] = []
     for drawing in drawings or []:
         if not isinstance(drawing, dict):
             continue
         kind = _classify_dash(drawing.get("dashes"))
-        if kind == "hidden":
-            continue
         for item in drawing.get("items") or []:
             seg = _segment(item)
             if seg is None:
@@ -427,16 +429,21 @@ def _drawing_segments(
 def _anchored_bend_axes_perpendicular(
     drawings: list[dict[str, Any]] | None,
     text_blocks: list[dict[str, Any]] | None,
-) -> bool:
-    """True when bend notes sit on lines that are about 90° apart.
+) -> str | None:
+    """Flag when bend notes sit on lines that are about 90° apart.
 
     The line under the note is the signal. The direction the note is written
     is not. One rotated note, or two notes on parallel lines, stays one plane.
-    Center and phantom strokes win over a nearby solid edge. Extra hole
-    centerlines do not count unless a note is actually sitting on them.
+    Center and phantom strokes win over a nearby solid edge. A short-dash
+    bend line wins over a solid edge too. Extra hole centerlines do not
+    count unless a note is actually sitting on them.
+
+    Centerline directions keep ``bends are not in a single plane``. A
+    short-dash or mixed pair (a box bent on two directions) is
+    ``bends in two planes, review``.
     """
     if not drawings or not text_blocks:
-        return False
+        return None
     notes: list[tuple[float, float]] = []
     for block in text_blocks:
         if not isinstance(block, dict):
@@ -452,10 +459,10 @@ def _anchored_bend_axes_perpendicular(
             continue
         notes.append(((x0 + x1) / 2.0, (y0 + y1) / 2.0))
     if len(notes) < 2:
-        return False
+        return None
     segments = _drawing_segments(drawings)
     if not segments:
-        return False
+        return None
     axes: list[tuple[str, float]] = []
     for px, py in notes:
         ranked: list[tuple[float, str, float]] = []
@@ -468,17 +475,19 @@ def _anchored_bend_axes_perpendicular(
         if not ranked:
             continue
         preferred = [item for item in ranked if item[1] in {"center", "phantom"}]
+        if not preferred:
+            preferred = [item for item in ranked if item[1] in {"dashed", "hidden"}]
         pool = preferred or ranked
         pool.sort(key=lambda item: item[0])
         axes.append((pool[0][1], pool[0][2]))
     if len(axes) < 2:
-        return False
+        return None
     # Do not mix a centerline with a solid border. A border is used only
-    # when no note is sitting on a center or phantom stroke.
+    # when no note is sitting on a center, phantom, or short-dash stroke.
     if any(kind in {"center", "phantom"} for kind, _angle in axes):
         axes = [(kind, angle) for kind, angle in axes if kind in {"center", "phantom"}]
     if len(axes) < 2:
-        return False
+        return None
     families: list[list[float]] = []
     for _kind, angle in axes:
         placed = False
@@ -489,11 +498,19 @@ def _anchored_bend_axes_perpendicular(
                 break
         if not placed:
             families.append([angle])
+    perpendicular = False
     for index, left in enumerate(families):
         for right in families[index + 1 :]:
             if _near_perpendicular(left[0], right[0]):
-                return True
-    return False
+                perpendicular = True
+                break
+        if perpendicular:
+            break
+    if not perpendicular:
+        return None
+    if any(kind in {"dashed", "hidden"} for kind, _angle in axes):
+        return "bends in two planes, review"
+    return "bends are not in a single plane"
 
 
 def _plane_flag(
@@ -647,8 +664,10 @@ def detect_bends(
                 None,
             )
             plane = geom.flag if geom and geom.flag else "bends are not in a single plane"
-        if plane is None and _anchored_bend_axes_perpendicular(drawings, text_blocks):
-            plane = "bends are not in a single plane"
+        if plane is None:
+            anchored = _anchored_bend_axes_perpendicular(drawings, text_blocks)
+            if anchored:
+                plane = anchored
         if extra:
             bends = [
                 DetectedBend(

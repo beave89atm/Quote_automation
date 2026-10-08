@@ -674,8 +674,21 @@ def _bare_inches(text: str) -> float | None:
     return _inches(match.group(1))
 
 
-def _accepted_size(width: float, length: float, text: str, thickness: float | None) -> bool:
-    """True when the pair can be the blank, not a sheet, angle, or scrap."""
+def _accepted_size(
+    width: float,
+    length: float,
+    text: str,
+    thickness: float | None,
+    *,
+    geometry: bool = False,
+) -> bool:
+    """True when the pair can be the blank, not a sheet, angle, or scrap.
+
+    ``looks_like_page_outline`` rejects a short side of about 1 in. That
+    caught CAD page and scale outlines (1×2, 1×16), not a flat whose
+    tip-to-tip size matches the part outline. A geometry pair that already
+    passed the sheet scale and the outline check keeps a 1 in side.
+    """
     from .item_desc import looks_like_drawing_sheet, looks_like_page_outline
 
     if width <= 0.25 or length <= 0.25 or max(width, length) > _MAX_BLANK_IN:
@@ -685,7 +698,9 @@ def _accepted_size(width: float, length: float, text: str, thickness: float | No
         return False
     if thickness is not None and (width <= thickness or length <= thickness):
         return False
-    if looks_like_drawing_sheet(width, length) or looks_like_page_outline(width, length):
+    if looks_like_drawing_sheet(width, length):
+        return False
+    if not geometry and looks_like_page_outline(width, length):
         return False
     return not _implausible_vs_part(width, length, text)
 
@@ -1258,15 +1273,34 @@ def _sheet_scale(span: float, value: float) -> float | None:
     return None
 
 
+def _mixed_stack(text: str) -> tuple[int, int] | None:
+    """A line-joined ``44 1`` is the whole number plus the numerator."""
+    match = re.fullmatch(r"(\d+)\s+(\d{1,2})", " ".join(str(text or "").split()))
+    if match is None:
+        return None
+    whole, numerator = int(match.group(1)), int(match.group(2))
+    if whole <= 0 or numerator <= 0:
+        return None
+    return whole, numerator
+
+
 def _stacked_inches(blocks: list[dict], bars: list[tuple[float, float, float]]) -> float | None:
-    """Whole number plus a numerator over a denominator, with a fraction-bar line."""
+    """Whole number plus a numerator over a denominator, with a fraction-bar line.
+
+    Spans are separate digits. A line join that already merged the whole
+    number and the numerator (``44 1`` over ``16``) is the same stack.
+    """
     digits: list[dict] = []
+    mixed: list[dict] = []
     for block in blocks:
         box = _bbox(block)
         text = " ".join(str(block.get("text") or "").split())
-        if box is None or not re.fullmatch(r"\d{1,2}", text):
+        if box is None:
             continue
-        digits.append(block)
+        if re.fullmatch(r"\d{1,2}", text):
+            digits.append(block)
+        elif _mixed_stack(text) is not None:
+            mixed.append(block)
     best: float | None = None
     for index, upper in enumerate(digits):
         for lower in digits[index + 1 :]:
@@ -1308,6 +1342,36 @@ def _stacked_inches(blocks: list[dict], bars: list[tuple[float, float, float]]) 
                     nearest = (gap, float(token))
             if nearest is not None:
                 whole = nearest[1]
+            value = whole + numerator / denominator
+            if best is None or value > best:
+                best = value
+    for upper in mixed:
+        parsed = _mixed_stack(str(upper.get("text") or ""))
+        upper_box = _bbox(upper)
+        if parsed is None or upper_box is None:
+            continue
+        whole, numerator = parsed
+        for lower in digits:
+            lower_box = _bbox(lower)
+            if lower_box is None or lower_box[1] < upper_box[1]:
+                continue
+            try:
+                denominator = int(" ".join(str(lower.get("text") or "").split()))
+            except ValueError:
+                continue
+            if denominator not in _STACK_FRACTION_DENS or not 0 < numerator < denominator:
+                continue
+            # The numerator is the right-hand piece of the joined line.
+            num_x = upper_box[2] - min(12.0, (upper_box[2] - upper_box[0]) / 4.0)
+            low_x = (lower_box[0] + lower_box[2]) / 2.0
+            if abs(low_x - num_x) > 16.0 and abs(lower_box[2] - upper_box[2]) > 16.0:
+                continue
+            mid_y = (upper_box[3] + lower_box[1]) / 2.0
+            if not any(
+                abs(bar[1] - mid_y) < 8.0 and bar[0] - 8.0 <= low_x <= bar[2] + 8.0
+                for bar in bars
+            ):
+                continue
             value = whole + numerator / denominator
             if best is None or value > best:
                 best = value
@@ -1733,7 +1797,9 @@ def _position_pair(
         pair, unclear = _geometry_flat_pair(blocks, drawings)
         if unclear:
             return None, True
-        if pair is not None and not _accepted_size(pair[0], pair[1], text, thickness):
+        if pair is not None and not _accepted_size(
+            pair[0], pair[1], text, thickness, geometry=True
+        ):
             return None, True
         return pair, False
     labels: list[tuple[dict, tuple[float, float, float, float]]] = []
@@ -1826,6 +1892,55 @@ def _sheet_radius_line(line: str) -> bool:
     )
 
 
+def _round_diameter_over_plate(text: str) -> bool:
+    """A stock diameter over 1 in. A hole callout is not stock."""
+    for line in str(text or "").splitlines():
+        if re.search(r"(?i)\b(?:HOLE|THRU|TYP)\b", line):
+            continue
+        for match in re.finditer(
+            r"(?i)(?:[Ø⌀∅]\s*(\d+(?:\.\d+)?)|(\d+(?:\.\d+)?)\s*(?:[Ø⌀∅]|\bDIA\b))",
+            line,
+        ):
+            raw = match.group(1) or match.group(2)
+            try:
+                if float(raw) > 1.0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
+
+
+def _thick_stock_centerline_radius(text: str) -> bool:
+    """Large R on round stock over 1 in, with no flat-pattern view.
+
+    A corner such as R1.38 on a sheet stays a plate, including when a
+    1.000 dimension is on the page. Stock over 1 in (the 2 in tube the
+    thickness parser already reads) with that R is formed.
+    """
+    blob = str(text or "")
+    if _FLAT_LABEL_RE.search(blob):
+        return False
+    if re.search(r"(?i)(?<![A-Z0-9])(?:UP|DOWN)[ \t]+\d", blob):
+        return False
+    from quote_core.part_materials import parse_material_block
+
+    thickness, _key, _source = parse_material_block(blob)
+    thick = thickness is not None and thickness > 1.0
+    if not thick and not _round_diameter_over_plate(blob):
+        return False
+    for line in blob.splitlines():
+        if _sheet_radius_line(line) or _TITLE_ANGLE_RE.search(line):
+            continue
+        for match in _TUBE_R_RE.finditer(line):
+            try:
+                radius = float(match.group(1))
+            except ValueError:
+                continue
+            if radius >= 1.0:
+                return True
+    return False
+
+
 def round_stock_bend_evidence(text: str) -> bool:
     """Tube or round stock that is formed, not a straight cut.
 
@@ -1837,6 +1952,8 @@ def round_stock_bend_evidence(text: str) -> bool:
     """
     blob = str(text or "")
     if _ROUND_STOCK_BEND_RE.search(blob):
+        return True
+    if _thick_stock_centerline_radius(blob):
         return True
     lines = blob.splitlines()
     for index in range(len(lines)):
@@ -1944,10 +2061,59 @@ def _stray_numbers_near_flat_label(text: str, text_blocks: list | None) -> bool:
     return False
 
 
-def _template_wording_review(text: str, read: BendRead, text_blocks: list | None) -> bool:
+def _label_pages(text_blocks: list | None) -> list[dict]:
+    return [
+        block
+        for block in _as_blocks(text_blocks)
+        if _bbox(block) and _FLAT_LABEL_RE.search(str(block.get("text") or ""))
+    ]
+
+
+def _undimensioned_flat_label(
+    text: str,
+    drawings: list | None,
+    text_blocks: list | None,
+) -> bool:
+    """A FLAT PATTERN label on a page that has no dimension arrows.
+
+    Title-block pairs and boilerplate on that sheet are not a flat view.
+    With no vectors at all, a printed W x L next to the label still counts.
+    """
+    if not drawings or not _FLAT_LABEL_RE.search(text or ""):
+        return False
+    labels = _label_pages(text_blocks)
+    pages = [block.get("page") for block in labels] or [None]
+    for page in pages:
+        if _arrow_tips(drawings, page):
+            return False
+    return True
+
+
+def _template_wording_review(
+    text: str,
+    read: BendRead,
+    text_blocks: list | None,
+    drawings: list | None = None,
+) -> bool:
     """Template boilerplate is a review flag, not a claim that the part is formed."""
     if read.bend_count not in (None, 0):
         return False
+    if (
+        not read.count_flag
+        and _undimensioned_flat_label(text, drawings, text_blocks)
+        and not any(
+            (
+                read.hem,
+                read.offset,
+                read.roll,
+                read.cone,
+                read.stretch,
+                read.unfold,
+                read.plane_flag,
+            )
+        )
+    ):
+        return True
     if any(
         (
             read.hem,
@@ -2035,10 +2201,25 @@ def evaluate_formed(
     if read.unfold:
         return FlatPattern(flag="bend lines are not parallel; needs a 2D unfold")
     if read.plane_flag:
-        return FlatPattern(flag=read.plane_flag)
+        # Still a flag. The count and a printed blank stay in the note
+        # so a reviewer can see them. Nothing is pushed.
+        note = ""
+        if read.bend_count and read.bend_count > 0:
+            printed, size_flag = _drawing_flat_decision(
+                text, thickness_in, text_blocks, drawings
+            )
+            parts = [f"bend count {int(read.bend_count)}"]
+            if printed is not None and not size_flag:
+                parts.append(f"flat {printed[0]:g} x {printed[1]:g} in")
+            note = "; ".join(parts)
+        return FlatPattern(
+            flag=read.plane_flag,
+            line_note=note,
+            bend_count=int(read.bend_count) if read.bend_count else None,
+        )
     if read.offset and not _offset_ready(read):
         return FlatPattern(flag="offset/jog is not dimensioned")
-    if _template_wording_review(text, read, text_blocks):
+    if _template_wording_review(text, read, text_blocks, drawings):
         return FlatPattern(flag=TEMPLATE_WORDING_FLAG, flag_field="review")
     if read.count_flag:
         return FlatPattern(flag=read.count_flag, flag_field="bend count")

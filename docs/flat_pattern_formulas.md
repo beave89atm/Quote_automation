@@ -49,7 +49,7 @@ Four identical 90° bends, outside chain total 12.000, same T, R, and K:
 - Bend with no stated angle
 - Missing or ambiguous inside radius. An ambiguous radius is flagged even when a flat size is also printed. A missing radius does not block a flat size that is already clear.
 - Printed flat size that is a chamfer, angle, thread, tolerance, or not a clear overall on the flat-pattern view
-- Tube or round-stock bend notes (`CLR`, centerline radius, or a bend table of angle, rotation, and length)
+- Tube or round-stock bend notes (`CLR`, centerline radius, a bend table of angle, rotation, and length, or a large `R` on stock over 1 in with no flat-pattern view)
 - Offset or joggle when both bends and the connecting straight are not dimensioned
 
 An offset or joggle is calculated when both bends and the connecting straight are dimensioned. Any stated bend angle is allowed. A missing angle is not.
