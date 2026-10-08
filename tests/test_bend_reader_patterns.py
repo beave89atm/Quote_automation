@@ -12,7 +12,7 @@ import fitz
 import pytest
 
 from quote_core.bend_conventions import detect_bends
-from secturafab.flat_pattern import evaluate_formed, read_bends
+from secturafab.flat_pattern import _bare_inches, _join_stacked_fraction_blocks, evaluate_formed, read_bends
 from secturafab.pdf_only import plan_pdf_only_file, plan_pdf_only_part
 
 _PLATE = "\n".join(
@@ -130,6 +130,17 @@ def test_rotated_bend_note_is_not_a_second_plane():
     assert found.count == 2
     assert found.flag is None
     assert found.plane_flag is None
+    # Parallel bend lines under those notes stay one plane too.
+    parallel = detect_bends(
+        "UP 90° R.25\nUP 15° R.25",
+        [
+            _centerline((60, 67), (420, 67)),
+            _centerline((60, 100), (420, 100)),
+        ],
+        text_blocks=blocks,
+    )
+    assert parallel.count == 2
+    assert parallel.plane_flag is None
 
 
 def test_fraction_dash_and_boilerplate_are_not_bend_counts():
@@ -633,3 +644,255 @@ def test_round_stock_bend_notes_flag_before_a_straight_cut():
     untouched = plan_pdf_only_part(text=straight, title="PEDESTAL TUBE")
     assert untouched.route == "long"
     assert "formed evidence" not in " ".join(untouched.notes)
+
+
+def _arrowed(p1: tuple[float, float], p2: tuple[float, float], axis: str) -> list[tuple]:
+    """A dimension line plus arrowhead ticks at both ends."""
+    x1, y1 = p1
+    x2, y2 = p2
+    lines = [("l", p1, p2)]
+    if axis == "h":
+        lines.extend(
+            [
+                ("l", p1, (x1 + 12, y1 - 4)),
+                ("l", (x1 + 12, y1 - 4), (x1 + 12, y1 + 4)),
+                ("l", p2, (x2 - 12, y2 - 4)),
+                ("l", (x2 - 12, y2 - 4), (x2 - 12, y2 + 4)),
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                ("l", p1, (x1 - 4, y1 + 12)),
+                ("l", (x1 - 4, y1 + 12), (x1 + 4, y1 + 12)),
+                ("l", p2, (x2 - 4, y2 - 12)),
+                ("l", (x2 - 4, y2 - 12), (x2 + 4, y2 - 12)),
+            ]
+        )
+    return lines
+
+
+def _flat_view_drawings() -> list[dict]:
+    items = [("re", (120, 160, 420, 280), 1)]
+    items.extend(_arrowed((120, 320), (420, 320), "h"))
+    items.extend(_arrowed((80, 160), (80, 280), "v"))
+    items.extend(_arrowed((180, 220), (220, 220), "h"))
+    return [{"page_rect": (0, 0, 612, 792), "items": items}]
+
+
+def _flat_view_blocks() -> list[dict]:
+    # Every dimension string is horizontal. The arrowheads carry the axis.
+    return [
+        {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (200, 128, 340, 144)},
+        {"text": "18 3", "dir": (1, 0), "bbox": (230, 300, 290, 314)},
+        {"text": "16", "dir": (1, 0), "bbox": (268, 314, 292, 328)},
+        {"text": "6.50", "dir": (1, 0), "bbox": (36, 208, 72, 222)},
+        {"text": "1.25", "dir": (1, 0), "bbox": (186, 204, 220, 218)},
+        {"text": "SIZE", "dir": (1, 0), "bbox": (500, 700, 540, 714)},
+        {"text": "125", "dir": (1, 0), "bbox": (500, 720, 540, 734)},
+    ]
+
+
+def test_stacked_fraction_spans_read_as_one_size():
+    split = _join_stacked_fraction_blocks(
+        [
+            {"text": "44", "dir": (1, 0), "bbox": (100, 200, 130, 214)},
+            {"text": "1", "dir": (1, 0), "bbox": (134, 196, 144, 208)},
+            {"text": "/", "dir": (1, 0), "bbox": (146, 204, 154, 216)},
+            {"text": "16", "dir": (1, 0), "bbox": (132, 214, 148, 228)},
+        ]
+    )
+    assert any(_bare_inches(block["text"]) == pytest.approx(44.0625) for block in split)
+    assert all(block["text"].strip() not in {"44", "1", "16", "/"} for block in split)
+
+    offset = _join_stacked_fraction_blocks(
+        [
+            {"text": "44 1", "dir": (1, 0), "bbox": (100, 198, 160, 212)},
+            {"text": "16", "dir": (1, 0), "bbox": (136, 214, 156, 228)},
+        ]
+    )
+    assert any(_bare_inches(block["text"]) == pytest.approx(44.0625) for block in offset)
+
+
+def test_dimension_lines_pair_unidirectional_flat_overalls(monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("formula ran even though the flat overalls were on the view")
+
+    monkeypatch.setattr("secturafab.flat_pattern.flat_length_in", _boom)
+    text = _formed_plate(
+        "UP 90° R.13",
+        "UP 90° R.13",
+        "FLAT PATTERN",
+        "18 3",
+        "16",
+        "6.50",
+        "1.25",
+        "SIZE",
+        "125",
+    )
+    blocks = _flat_view_blocks()
+    drawings = _flat_view_drawings()
+    decision = evaluate_formed(
+        text,
+        thickness_in=0.125,
+        drawings=drawings,
+        text_blocks=blocks,
+    )
+    assert decision is not None
+    assert decision.flag is None
+    assert decision.length_source == "drawing flat pattern"
+    assert decision.width_in == pytest.approx(18.1875)
+    assert decision.developed_length_in == pytest.approx(6.50)
+    assert decision.width_in != pytest.approx(125)
+    assert decision.developed_length_in != pytest.approx(125)
+
+    plan = plan_pdf_only_part(
+        text=text,
+        title="SAMPLE BRACKET",
+        drawings=drawings,
+        text_blocks=blocks,
+    )
+    assert plan.route == "image_files"
+    assert plan.flat_source == "drawing flat pattern"
+    assert plan.width_in == pytest.approx(18.1875)
+    assert plan.length_in == pytest.approx(6.50)
+
+
+def test_flat_over_120_in_or_without_a_vertical_line_flags(monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("formula ran on an unclear flat size")
+
+    monkeypatch.setattr("secturafab.flat_pattern.flat_length_in", _boom)
+    text = _formed_plate("UP 90° R.13", "UP 90° R.13", "FLAT PATTERN", "130.00", "6.50")
+    blocks = [
+        {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (200, 128, 340, 144)},
+        {"text": "130.00", "dir": (1, 0), "bbox": (240, 300, 300, 314)},
+        {"text": "6.50", "dir": (1, 0), "bbox": (36, 208, 72, 222)},
+    ]
+    too_long = evaluate_formed(
+        text,
+        thickness_in=0.125,
+        drawings=_flat_view_drawings(),
+        text_blocks=blocks,
+    )
+    assert too_long is not None
+    assert too_long.flag == "flat pattern size is not clear"
+    assert too_long.developed_length_in is None
+    assert too_long.width_in != pytest.approx(130)
+
+    horizontal_only = [
+        {
+            "page_rect": (0, 0, 612, 792),
+            "items": [("re", (120, 160, 420, 280), 1), *_arrowed((120, 320), (420, 320), "h")],
+        }
+    ]
+    unclear = evaluate_formed(
+        _formed_plate("UP 90° R.13", "UP 90° R.13", "FLAT PATTERN", "18.25", "6.50"),
+        thickness_in=0.125,
+        drawings=horizontal_only,
+        text_blocks=[
+            {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (200, 128, 340, 144)},
+            {"text": "18.25", "dir": (1, 0), "bbox": (240, 300, 300, 314)},
+            {"text": "6.50", "dir": (1, 0), "bbox": (36, 208, 72, 222)},
+        ],
+    )
+    assert unclear is not None
+    assert unclear.flag == "flat pattern size is not clear"
+    assert unclear.length_source != "drawing flat pattern"
+
+
+def test_notes_on_perpendicular_bend_lines_are_two_planes():
+    blocks = [
+        {"text": "UP 90° R.25", "dir": (1, 0), "bbox": (80, 150, 180, 164)},
+        {"text": "DOWN 90° R.25", "dir": (1, 0), "bbox": (220, 80, 330, 94)},
+    ]
+    drawings = [
+        _centerline((40, 157), (400, 157)),
+        _centerline((250, 40), (250, 400)),
+        _centerline((0, 320), (500, 320)),
+    ]
+    found = detect_bends(
+        "UP 90° R.25\nDOWN 90° R.25",
+        drawings,
+        text_blocks=blocks,
+    )
+    assert found.count == 2
+    assert found.plane_flag == "bends are not in a single plane"
+
+    decision = evaluate_formed(
+        _formed_plate("UP 90° R.25", "DOWN 90° R.25", "FLAT PATTERN", "18.25 X 6.50"),
+        thickness_in=0.125,
+        drawings=drawings,
+        text_blocks=blocks,
+    )
+    assert decision is not None
+    assert decision.flag == "bends are not in a single plane"
+    assert decision.developed_length_in is None
+
+
+def test_template_wording_is_a_review_not_a_formed_claim():
+    stray = "\n".join([_PLATE, "FLAT PATTERN VIEW"])
+    blocks = [
+        {"text": "FLAT PATTERN VIEW", "dir": (1, 0), "bbox": (72, 72, 220, 88)},
+        {"text": "3.89", "dir": (1, 0), "bbox": (80, 200, 120, 214)},
+        {"text": "36", "dir": (1, 0), "bbox": (90, 360, 120, 374)},
+    ]
+    decision = evaluate_formed(stray, thickness_in=0.25, text_blocks=blocks)
+    assert decision is not None
+    assert decision.flag == "template wording only, review"
+    assert decision.flag_field == "review"
+    plan = plan_pdf_only_part(text=stray, title="SAMPLE PLATE", text_blocks=blocks)
+    notes = " ".join(plan.notes)
+    assert plan.route == "refuse"
+    assert "template wording only, review" in notes
+    assert "formed evidence" not in notes
+    assert "formed part" not in notes
+
+    angular = "\n".join([_PLATE, "ALL ANGULAR DIMENSIONS 90°"])
+    angled = evaluate_formed(angular, thickness_in=0.075)
+    assert angled is not None
+    assert angled.flag == "template wording only, review"
+    angled_plan = plan_pdf_only_part(text=angular, title="SAMPLE PLATE")
+    angled_notes = " ".join(angled_plan.notes)
+    assert "template wording only, review" in angled_notes
+    assert "a bend angle does not give a count" not in angled_notes
+    assert "formed part" not in angled_notes
+
+
+def test_r_decimal_and_tube_leg_degrees_flag_as_formed():
+    radius = "\n".join(
+        [
+            "BENT SECTION",
+            "R5.91",
+            "2.00",
+        ]
+    )
+    plan = plan_pdf_only_part(text=radius, title="BENT SECTION")
+    assert plan.route == "refuse"
+    assert plan.route != "long"
+    assert plan.route != "image_files"
+    assert "tube or round-stock bend notes are formed evidence" in " ".join(plan.notes)
+
+    leg = "\n".join(
+        [
+            "2.00 OD",
+            "0.120 WALL",
+            "15°",
+        ]
+    )
+    marked = plan_pdf_only_part(text=leg, title="BENT TUBE")
+    assert marked.route == "refuse"
+    assert marked.route != "long"
+    assert "tube or round-stock bend notes are formed evidence" in " ".join(marked.notes)
+
+    called = "\n".join(
+        [
+            "2.00 OD X 0.120 WALL",
+            "BEND",
+            "A36",
+            "40 LG.",
+        ]
+    )
+    word = plan_pdf_only_part(text=called, title="BENT TUBE")
+    assert word.route == "refuse"
+    assert word.route != "long"

@@ -401,6 +401,101 @@ def _near_perpendicular(left: float, right: float) -> bool:
     return abs(_undirected_delta(left, right) - 90.0) <= 12.0
 
 
+def _drawing_segments(
+    drawings: list[dict[str, Any]] | None,
+) -> list[tuple[float, float, float, float, float, str]]:
+    """Long strokes as (x1, y1, x2, y2, length, dash kind). Hidden lines are out."""
+    found: list[tuple[float, float, float, float, float, str]] = []
+    for drawing in drawings or []:
+        if not isinstance(drawing, dict):
+            continue
+        kind = _classify_dash(drawing.get("dashes"))
+        if kind == "hidden":
+            continue
+        for item in drawing.get("items") or []:
+            seg = _segment(item)
+            if seg is None:
+                continue
+            (x1, y1), (x2, y2) = seg
+            length = math.hypot(x2 - x1, y2 - y1)
+            if length < 36.0:
+                continue
+            found.append((x1, y1, x2, y2, length, kind))
+    return found
+
+
+def _anchored_bend_axes_perpendicular(
+    drawings: list[dict[str, Any]] | None,
+    text_blocks: list[dict[str, Any]] | None,
+) -> bool:
+    """True when bend notes sit on lines that are about 90° apart.
+
+    The line under the note is the signal. The direction the note is written
+    is not. One rotated note, or two notes on parallel lines, stays one plane.
+    Center and phantom strokes win over a nearby solid edge. Extra hole
+    centerlines do not count unless a note is actually sitting on them.
+    """
+    if not drawings or not text_blocks:
+        return False
+    notes: list[tuple[float, float]] = []
+    for block in text_blocks:
+        if not isinstance(block, dict):
+            continue
+        if not _NOTE_AXIS_RE.search(str(block.get("text") or "")):
+            continue
+        bbox = block.get("bbox")
+        if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+            continue
+        try:
+            x0, y0, x1, y1 = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        except (TypeError, ValueError):
+            continue
+        notes.append(((x0 + x1) / 2.0, (y0 + y1) / 2.0))
+    if len(notes) < 2:
+        return False
+    segments = _drawing_segments(drawings)
+    if not segments:
+        return False
+    axes: list[tuple[str, float]] = []
+    for px, py in notes:
+        ranked: list[tuple[float, str, float]] = []
+        for x1, y1, x2, y2, _length, kind in segments:
+            dist = _point_segment_distance(px, py, x1, y1, x2, y2)
+            if dist > 36.0:
+                continue
+            angle = math.degrees(math.atan2(y2 - y1, x2 - x1)) % 180.0
+            ranked.append((dist, kind, angle))
+        if not ranked:
+            continue
+        preferred = [item for item in ranked if item[1] in {"center", "phantom"}]
+        pool = preferred or ranked
+        pool.sort(key=lambda item: item[0])
+        axes.append((pool[0][1], pool[0][2]))
+    if len(axes) < 2:
+        return False
+    # Do not mix a centerline with a solid border. A border is used only
+    # when no note is sitting on a center or phantom stroke.
+    if any(kind in {"center", "phantom"} for kind, _angle in axes):
+        axes = [(kind, angle) for kind, angle in axes if kind in {"center", "phantom"}]
+    if len(axes) < 2:
+        return False
+    families: list[list[float]] = []
+    for _kind, angle in axes:
+        placed = False
+        for family in families:
+            if _undirected_delta(angle, family[0]) <= 12.0:
+                family.append(angle)
+                placed = True
+                break
+        if not placed:
+            families.append([angle])
+    for index, left in enumerate(families):
+        for right in families[index + 1 :]:
+            if _near_perpendicular(left[0], right[0]):
+                return True
+    return False
+
+
 def _plane_flag(
     text: str,
     conventions: tuple[Convention, ...],
@@ -443,8 +538,9 @@ def detect_bends(
     ``text_blocks`` is optional. Each item may carry ``text``, ``dir``
     ``(dx, dy)``, and ``bbox`` ``(x0, y0, x1, y1)`` from the PDF text layer.
     A centerline counts only when a bend note sits on it. The direction the
-    note is written is not a bend plane. Geometry never creates a bend and
-    never overrides the text count.
+    note is written is not a bend plane. Notes that sit on bend lines about
+    90° apart are two planes. Geometry never creates a bend and never
+    overrides the text count.
     """
     library = conventions if conventions is not None else load_conventions()
     blob = text if already_masked else mask_false_positives(text, library)
@@ -551,6 +647,8 @@ def detect_bends(
                 None,
             )
             plane = geom.flag if geom and geom.flag else "bends are not in a single plane"
+        if plane is None and _anchored_bend_axes_perpendicular(drawings, text_blocks):
+            plane = "bends are not in a single plane"
         if extra:
             bends = [
                 DetectedBend(

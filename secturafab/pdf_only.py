@@ -515,7 +515,16 @@ def _pdf_text_and_vectors(path: Path) -> tuple[str, list | None, list | None]:
         blocks: list = []
         for page in doc:
             texts.append(page.get_text("text") or "")
-            drawings.extend(page.get_drawings() or [])
+            for drawing in page.get_drawings() or []:
+                stamped = dict(drawing)
+                stamped["page"] = page.number
+                stamped["page_rect"] = (
+                    float(page.rect.x0),
+                    float(page.rect.y0),
+                    float(page.rect.x1),
+                    float(page.rect.y1),
+                )
+                drawings.append(stamped)
             raw = page.get_text("dict") or {}
             for block in raw.get("blocks") or []:
                 if block.get("type") != 0:
