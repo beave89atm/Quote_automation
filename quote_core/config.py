@@ -71,6 +71,8 @@ class ShopRates:
     always_ask: list[str] = field(default_factory=list)
     # PDF-only carbon steel with no grade on the drawing. Still FLAG for confirmation.
     carbon_steel_default_grade: str = "A36"
+    # Sheet-metal neutral-axis factor. Quoting assumption, written on the line note.
+    flat_pattern_k_factor: float = 0.33
     raw: dict[str, Any] = field(default_factory=dict)
 
     def ipm_for(self, size: str) -> float:
@@ -121,6 +123,10 @@ def load_shop_rates(path: Path | str | None = None) -> ShopRates:
     ipm = {str(k): float(v) for k, v in (weld.get("ipm") or {}).items()}
     materials = raw.get("materials") or {}
     carbon_default = str(materials.get("carbon_steel_default_grade") or "").strip() or "A36"
+    if materials.get("flat_pattern_k_factor") in (None, ""):
+        k_factor = 0.33
+    else:
+        k_factor = float(materials["flat_pattern_k_factor"])
 
     return ShopRates(
         shared_password=str(app.get("shared_password") or ""),
@@ -131,5 +137,6 @@ def load_shop_rates(path: Path | str | None = None) -> ShopRates:
         fitup=_fitup_from(raw.get("fitup")),
         always_ask=list(raw.get("always_ask") or []),
         carbon_steel_default_grade=carbon_default,
+        flat_pattern_k_factor=k_factor,
         raw=raw,
     )

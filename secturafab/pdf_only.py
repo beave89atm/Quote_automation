@@ -10,12 +10,10 @@ drawing that does not name a family, is flagged and not given a grade.
 
 A flat plate with no bend callouts has bend count 0 and no Bend op.
 A formed part's bend count comes from the conventions library. The flat
-length comes from ``flat_length_in`` in ``secturafab/flat_formula.py``.
-That function ships unset, so a formed part stops before a quote with
-``FLAG: formed part — flat pattern formula not set``. When the function
-returns a length, Image Files stamps the drawing width and that length,
-and the line note records ``NumberOfBends``. No captured request writes
-that operation field.
+length comes from ``secturafab/flat_formula.py`` with K from shop config
+(0.33). Image Files stamps the drawing width and that length. The line
+note records ``K=0.33 assumed`` and ``NumberOfBends``. No captured request
+writes that operation field.
 """
 
 from __future__ import annotations

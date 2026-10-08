@@ -66,6 +66,9 @@ fitup:
 # and any drawing that does not name a family do not use this default.
 materials:
   carbon_steel_default_grade: A36
+  # Neutral-axis factor for the flat-pattern guide. A quoting assumption.
+  # Line notes always say K=<this> assumed.
+  flat_pattern_k_factor: 0.33
 
 # Rules the takeoff engine should never invent — flag for human review instead.
 always_ask:

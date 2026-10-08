@@ -488,15 +488,23 @@ def _formed_plate(*extra: str) -> str:
     ("extra", "reason"),
     [
         (("HEM",), "hem is not a simple bend"),
-        (("JOG",), "offset/jog is not a simple bend"),
-        (("OFFSET",), "offset/jog is not a simple bend"),
+        (("JOG",), "offset/jog is not dimensioned"),
+        (("OFFSET",), "offset/jog is not dimensioned"),
         (
             ("3 BENDS", "90 DEG", "INSIDE RADIUS 0.25", "DIMENSIONS INSIDE"),
-            "leg count does not match the bend count",
+            "inside dimensions were not converted to tangent or outside",
         ),
         (
-            ("BEND 45 DEG", "INSIDE RADIUS 0.25", "DIMENSIONS INSIDE"),
-            "bend angle is not 90°",
+            (
+                "1 BEND",
+                "135 DEG",
+                "INSIDE RADIUS 0.125",
+                "DIMENSIONS OUTSIDE",
+                "LEG 2.000",
+                "LEG 3.000",
+                "WIDTH 6.00",
+            ),
+            "angle convention can't be determined",
         ),
         (
             (
@@ -517,11 +525,11 @@ def _formed_plate(*extra: str) -> str:
                 "DIMENSIONS INSIDE",
                 "DIMENSIONS OUTSIDE",
             ),
-            "dimension convention is ambiguous",
+            "dimension basis is ambiguous",
         ),
         (
             ("1 BEND", "90 DEG", "INSIDE RADIUS 0.25", "LEG 2.00", "LEG 3.00", "WIDTH 6.00"),
-            "dimension convention was not stated",
+            "dimension basis was not stated",
         ),
         (("FRONT VIEW", "SIDE VIEW"), "view-only shape has no bend callouts"),
         (("UP",), "UP/DOWN callout has no angle and no count"),
@@ -591,32 +599,27 @@ _ONE_BEND = "\n".join(
     [
         "TITLE",
         "FORMED BRACKET",
-        "MATERIAL",
-        "1/4",
+        "0.125",
         "A36",
         "PLATE",
         "1 BEND",
         "BEND UP 90 DEG",
-        "INSIDE RADIUS 0.25",
-        "DIMENSIONS INSIDE",
-        "LEG 2.00",
-        "LEG 3.00",
+        "INSIDE RADIUS 0.125",
+        "DIMENSIONS OUTSIDE",
+        "LEG 2.000",
+        "LEG 3.000",
         "WIDTH 6.00",
     ]
 )
 
 
-def _stub_flat_length(legs_in, thickness_in, inside_radius_in, bend_count):
-    """Fixture only. Not shop math."""
-    return sum(legs_in) + 0.1 * bend_count
-
-
-def test_pdf_unset_flat_formula_stops_before_quote(tmp_path: Path, monkeypatch):
-    from secturafab.flat_pattern import FORMULA_NOT_SET
-
+def test_pdf_inside_dimensions_stop_before_quote(tmp_path: Path, monkeypatch):
     _silence_chrome(monkeypatch)
     pdf = tmp_path / "73476004.pdf"
-    _write_pdf(pdf, _ONE_BEND)
+    _write_pdf(
+        pdf,
+        _ONE_BEND.replace("DIMENSIONS OUTSIDE", "DIMENSIONS INSIDE"),
+    )
     client = MagicMock()
     client.config.website_cookie = "ASP.NET_SessionId=test"
     service = SecturaFabPushService(client=client)
@@ -644,24 +647,14 @@ def test_pdf_unset_flat_formula_stops_before_quote(tmp_path: Path, monkeypatch):
     upload.assert_not_called()
     finish.assert_not_called()
     linear.assert_not_called()
-    assert result.error == f"FLAG: formed part — {FORMULA_NOT_SET}"
+    assert result.error is not None
+    assert "inside dimensions were not converted" in result.error
 
 
-def test_pdf_stub_formula_stamps_flat_length_and_bend_count(
-    tmp_path: Path, monkeypatch
-):
-    """Fixture formula only. Legs in, flat length on the Image Files line."""
+def test_pdf_guide_flat_stamps_length_and_bend_count(tmp_path: Path, monkeypatch):
+    """Guide example: outside 2 and 3, T = R = 0.125, K = 0.33, FL = 4.761145."""
     from secturafab.bend_op import BEND_COUNT_WRITE_GAP_NOTE
 
-    seen: dict = {}
-
-    def _stub(legs_in, thickness_in, inside_radius_in, bend_count):
-        seen["args"] = (legs_in, thickness_in, inside_radius_in, bend_count)
-        return _stub_flat_length(
-            legs_in, thickness_in, inside_radius_in, bend_count
-        )
-
-    monkeypatch.setattr("secturafab.flat_pattern.flat_length_in", _stub)
     _silence_chrome(monkeypatch)
     pdf = tmp_path / "73476004.pdf"
     _write_pdf(pdf, _ONE_BEND)
@@ -699,20 +692,20 @@ def test_pdf_stub_formula_stamps_flat_length_and_bend_count(
             item.stop()
 
     assert result.ok is True, (result.error, result.notes)
-    assert seen["args"] == ((2.0, 3.0), 0.25, 0.25, 1)
     client.add_item_pdf_files.assert_called()
     stamped = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
     assert float(stamped["Width"]) == pytest.approx(6.0)
-    assert float(stamped["Length"]) == pytest.approx(5.1)
+    assert float(stamped["Length"]) == pytest.approx(4.761145, abs=1e-6)
     notes = stamped.get("Notes") or ""
-    assert "legs 2, 3 in" in notes
-    assert "flat length 5.1 in" in notes
+    assert "basis outside" in notes
+    assert "K=0.33 assumed" in notes
+    assert "flat length 4.761145 in" in notes
     assert "width 6 in from the drawing" in notes
     assert "Bend NumberOfBends = 1" in notes
     blob = " ".join(result.notes or [])
     assert "Bend op with Profile; bend count 1" in blob
     assert BEND_COUNT_WRITE_GAP_NOTE in blob
-    assert "flat length 5.1 in" in blob
+    assert "flat length 4.761145 in" in blob
 
 
 def _no_hole_zero_contour_finish() -> dict:
