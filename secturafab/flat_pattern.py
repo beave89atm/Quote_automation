@@ -642,8 +642,8 @@ _TITLE_WORD_RE = re.compile(
 _STACK_FRACTION_DENS = {2, 4, 8, 16, 32, 64}
 _NEAR_LABEL_PT = 480.0
 _CLUSTER_PT = 160.0
-_DIM_LINE_REACH_PT = 56.0
-_ARROW_PT = 14.0
+# Tip-to-tip distance / inches. These are the sheet scales this shop prints.
+_SHEET_SCALES = (72.0, 36.0, 24.0, 18.0, 12.0, 9.0, 8.0, 6.0)
 
 
 def _degree_marked(text: str) -> bool:
@@ -947,21 +947,6 @@ def _segment_length(segment: tuple[float, float, float, float]) -> float:
     return math.hypot(segment[2] - segment[0], segment[3] - segment[1])
 
 
-def _point_segment_distance(
-    px: float,
-    py: float,
-    segment: tuple[float, float, float, float],
-) -> float:
-    x1, y1, x2, y2 = segment
-    dx, dy = x2 - x1, y2 - y1
-    length_sq = dx * dx + dy * dy
-    if length_sq <= 0:
-        return math.hypot(px - x1, py - y1)
-    ratio = ((px - x1) * dx + (py - y1) * dy) / length_sq
-    ratio = max(0.0, min(1.0, ratio))
-    return math.hypot(px - (x1 + ratio * dx), py - (y1 + ratio * dy))
-
-
 def _drawings_on_page(drawings: list | None, page: object) -> list[dict]:
     found: list[dict] = []
     for drawing in drawings or []:
@@ -988,196 +973,580 @@ def _page_rect(drawings: list[dict]) -> tuple[float, float, float, float] | None
     return None
 
 
-def _page_geometry(
+
+def _path_kind(drawing: dict) -> str:
+    return str(drawing.get("type") or drawing.get("kind") or "s")
+
+
+def _path_width(drawing: dict) -> float:
+    try:
+        return float(drawing.get("width") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _is_solid(dashes: object) -> bool:
+    if dashes is None:
+        return True
+    if isinstance(dashes, (list, tuple)):
+        return len(dashes) == 0
+    return str(dashes).strip() in {"", "[] 0", "[]0", "None"}
+
+
+def _near_pt(left: tuple[float, float], right: tuple[float, float], tol: float = 0.8) -> bool:
+    return math.hypot(left[0] - right[0], left[1] - right[1]) <= tol
+
+
+def _unique_pts(points: list[tuple[float, float]], tol: float = 0.25) -> list[tuple[float, float]]:
+    unique: list[tuple[float, float]] = []
+    for point in points:
+        if not any(_near_pt(point, kept, tol) for kept in unique):
+            unique.append(point)
+    return unique
+
+
+def _triangle_tip(
+    points: list[tuple[float, float]],
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Tip and base center of one arrowhead.
+
+    The short edge is the base. The opposite vertex is the tip. Shop
+    arrowheads are about 9.5 by 2.9 pt; a few sheets use about 4.5 by 1.4.
+    """
+    points = _unique_pts(points)
+    if len(points) != 3:
+        return None
+    width = max(point[0] for point in points) - min(point[0] for point in points)
+    height = max(point[1] for point in points) - min(point[1] for point in points)
+    if max(width, height) > 14.0 or max(width, height) < 2.2 or min(width, height) < 0.35:
+        return None
+    edges: list[tuple[float, tuple[float, float], tuple[float, float], tuple[float, float]]] = []
+    for index in range(3):
+        start, end = points[index], points[(index + 1) % 3]
+        edges.append((math.hypot(end[0] - start[0], end[1] - start[1]), start, end, points[(index + 2) % 3]))
+    edges.sort(key=lambda edge: edge[0])
+    base_len, start, end, tip = edges[0]
+    long_len = edges[-1][0]
+    if long_len < 2.0 or base_len < 0.4 or base_len > long_len * 0.65:
+        return None
+    base = ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0)
+    return tip, base
+
+
+def _arrow_tips(
     drawings: list | None,
     page: object,
-) -> tuple[list[tuple[float, float, float, float]], list[tuple[float, float, float, float]], tuple | None]:
-    segments: list[tuple[float, float, float, float]] = []
-    rects: list[tuple[float, float, float, float]] = []
-    chosen = _drawings_on_page(drawings, page)
-    for drawing in chosen:
+) -> list[tuple[tuple[float, float], tuple[float, float], tuple[float, float]]]:
+    """Arrow tips as (tip, base center, unit direction from base to tip)."""
+    found: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for drawing in _drawings_on_page(drawings, page):
+        segments: list[tuple[float, float, float, float]] = []
         for item in drawing.get("items") or []:
             segment = _as_line(item)
             if segment is not None:
                 segments.append(segment)
+        index = 0
+        while index < len(segments):
+            found_tip = None
+            step = 1
+            if index + 1 < len(segments):
+                first, second = segments[index], segments[index + 1]
+                found_tip = _triangle_tip(
+                    [(first[0], first[1]), (first[2], first[3]), (second[0], second[1]), (second[2], second[3])]
+                )
+                if found_tip is not None:
+                    step = 2
+            if found_tip is None and index + 2 < len(segments):
+                points: list[tuple[float, float]] = []
+                for segment in segments[index : index + 3]:
+                    points.extend([(segment[0], segment[1]), (segment[2], segment[3])])
+                found_tip = _triangle_tip(points)
+                if found_tip is not None:
+                    step = 3
+            if found_tip is not None:
+                found.append(found_tip)
+                index += step
                 continue
-            rect = _as_rect(item)
-            if rect is not None:
-                rects.append(rect)
-    return segments, rects, _page_rect(chosen)
+            index += 1
+    unique: list[tuple[tuple[float, float], tuple[float, float], tuple[float, float]]] = []
+    for tip, base in found:
+        if any(_near_pt(tip, other[0], 0.45) for other in unique):
+            continue
+        dx, dy = tip[0] - base[0], tip[1] - base[1]
+        norm = math.hypot(dx, dy) or 1.0
+        direction = (dx / norm, dy / norm)
+        if max(abs(direction[0]), abs(direction[1])) < 0.75:
+            continue
+        unique.append((tip, base, direction))
+    return unique
 
 
-def _arrow_at(
-    x: float,
-    y: float,
-    shorts: list[tuple[float, float, float, float]],
-) -> bool:
-    for segment in shorts:
-        if (
-            math.hypot(segment[0] - x, segment[1] - y) <= 3.5
-            or math.hypot(segment[2] - x, segment[3] - y) <= 3.5
-        ):
-            return True
-    return False
+def _pair_arrow_dims(
+    arrows: list[tuple[tuple[float, float], tuple[float, float], tuple[float, float]]],
+) -> list[dict]:
+    """One dimension per consecutive pair of arrow tips on the same line.
 
-
-def _dimension_lines(
-    segments: list[tuple[float, float, float, float]],
-) -> list[tuple[float, float, float, float]]:
-    """Long lines with an arrowhead at each end. Those measure the extent."""
-    longs = [segment for segment in segments if _segment_length(segment) >= 20.0]
-    shorts = [segment for segment in segments if _segment_length(segment) < _ARROW_PT]
-    found: list[tuple[float, float, float, float]] = []
-    for segment in longs:
-        if _arrow_at(segment[0], segment[1], shorts) and _arrow_at(segment[2], segment[3], shorts):
-            found.append(segment)
-    return found
-
-
-def _segment_axis(segment: tuple[float, float, float, float]) -> str | None:
-    angle = math.degrees(math.atan2(segment[3] - segment[1], segment[2] - segment[0])) % 180.0
-    if min(angle, 180.0 - angle) <= 20.0:
-        return "h"
-    if abs(angle - 90.0) <= 20.0:
-        return "v"
-    return None
-
-
-def _geometry_axis(
-    box: tuple[float, float, float, float],
-    dim_lines: list[tuple[float, float, float, float]],
-) -> tuple[str | None, tuple[float, float, float, float] | None]:
-    """Axis of the arrowheaded dimension line next to this number.
-
-    Two different axes equally close means the geometry is not conclusive.
+    A normal overall points the arrows outward and breaks the line at the
+    text. A short overall points them inward and runs the line past the tips.
+    Both styles measure tip to tip.
     """
-    cx = (box[0] + box[2]) / 2.0
-    cy = (box[1] + box[3]) / 2.0
-    ranked: list[tuple[float, str, tuple[float, float, float, float]]] = []
-    for segment in dim_lines:
-        axis = _segment_axis(segment)
-        if axis is None:
+    grouped: dict[str, list[tuple[tuple[float, float], tuple[float, float]]]] = {"h": [], "v": []}
+    for tip, _base, direction in arrows:
+        axis = "h" if abs(direction[0]) >= abs(direction[1]) else "v"
+        grouped[axis].append((tip, direction))
+    dims: list[dict] = []
+    for axis, rows in grouped.items():
+        along = 0 if axis == "h" else 1
+        rows.sort(key=lambda row: row[0][1] if axis == "h" else row[0][0])
+        clusters: list[dict] = []
+        for tip, direction in rows:
+            coord = tip[1] if axis == "h" else tip[0]
+            placed = False
+            for cluster in clusters:
+                if abs(coord - cluster["coord"]) <= 1.2:
+                    cluster["rows"].append((tip, direction))
+                    count = len(cluster["rows"])
+                    cluster["coord"] = (cluster["coord"] * (count - 1) + coord) / count
+                    placed = True
+                    break
+            if not placed:
+                clusters.append({"coord": coord, "rows": [(tip, direction)]})
+        for cluster in clusters:
+            ordered = sorted(cluster["rows"], key=lambda row: row[0][along])
+            for (first_tip, first_dir), (second_tip, second_dir) in zip(ordered, ordered[1:]):
+                span = abs(second_tip[along] - first_tip[along])
+                if span < 8.0:
+                    continue
+                outward = first_dir[along] < -0.7 and second_dir[along] > 0.7
+                inward = first_dir[along] > 0.7 and second_dir[along] < -0.7
+                if not outward and not inward:
+                    continue
+                dims.append(
+                    {
+                        "axis": axis,
+                        "coord": cluster["coord"],
+                        "span": span,
+                        "t1": first_tip,
+                        "t2": second_tip,
+                    }
+                )
+    return dims
+
+
+def _dim_segments(drawings: list | None, page: object) -> list[tuple[float, float, float, float]]:
+    segments: list[tuple[float, float, float, float]] = []
+    for drawing in _drawings_on_page(drawings, page):
+        if _path_kind(drawing) not in {"s", "fs", ""}:
             continue
-        dist = _point_segment_distance(cx, cy, segment)
-        if dist <= _DIM_LINE_REACH_PT:
-            ranked.append((dist, axis, segment))
-    if not ranked:
-        return None, None
-    ranked.sort(key=lambda item: item[0])
-    best = ranked[0]
-    for dist, axis, _segment in ranked[1:]:
-        if dist <= best[0] + 8.0 and axis != best[1]:
-            return None, None
-    return best[1], best[2]
-
-
-def _view_outline(
-    rects: list[tuple[float, float, float, float]],
-    segments: list[tuple[float, float, float, float]],
-    dim_lines: list[tuple[float, float, float, float]],
-    label_box: tuple[float, float, float, float],
-    page_rect: tuple[float, float, float, float] | None,
-) -> tuple[float, float, float, float] | None:
-    """The flat-pattern profile near the view label, not the dimension lines."""
-    near_rects = [
-        rect
-        for rect in rects
-        if _box_gap(rect, label_box) <= _NEAR_LABEL_PT and (rect[2] - rect[0]) * (rect[3] - rect[1]) >= 400.0
-    ]
-    if near_rects:
-        return max(near_rects, key=lambda rect: (rect[2] - rect[0]) * (rect[3] - rect[1]))
-    dim_keys = {tuple(round(value, 2) for value in segment) for segment in dim_lines}
-    boxes: list[tuple[float, float, float, float]] = []
-    for segment in segments:
-        if tuple(round(value, 2) for value in segment) in dim_keys:
+        width = _path_width(drawing)
+        if width != 0.0 and not (0.35 <= width <= 0.80):
             continue
-        if _segment_length(segment) < 30.0 or _on_page_border(segment, page_rect):
+        if not _is_solid(drawing.get("dashes")):
             continue
-        box = (
-            min(segment[0], segment[2]),
-            min(segment[1], segment[3]),
-            max(segment[0], segment[2]),
-            max(segment[1], segment[3]),
-        )
-        if _box_gap(box, label_box) <= _NEAR_LABEL_PT:
-            boxes.append(box)
-    if not boxes:
-        return None
-    return (
-        min(box[0] for box in boxes),
-        min(box[1] for box in boxes),
-        max(box[2] for box in boxes),
-        max(box[3] for box in boxes),
-    )
+        for item in drawing.get("items") or []:
+            segment = _as_line(item)
+            if segment is None or _segment_length(segment) < 4.0:
+                continue
+            dx = abs(segment[2] - segment[0])
+            dy = abs(segment[3] - segment[1])
+            if min(dx, dy) > 1.2:
+                continue
+            segments.append(segment)
+    return segments
 
 
-def _on_page_border(
-    segment: tuple[float, float, float, float],
-    page_rect: tuple[float, float, float, float] | None,
-) -> bool:
-    if page_rect is None:
-        return False
-    x0, y0, x1, y1 = page_rect
+def _fraction_bars(drawings: list | None, page: object) -> list[tuple[float, float, float]]:
+    """Short horizontal fraction bars: (x0, y, x1). The bar is a line, not a slash."""
+    bars: list[tuple[float, float, float]] = []
+    for drawing in _drawings_on_page(drawings, page):
+        width = _path_width(drawing)
+        if not (0.25 <= width <= 0.60) or not _is_solid(drawing.get("dashes")):
+            continue
+        for item in drawing.get("items") or []:
+            segment = _as_line(item)
+            if segment is None:
+                continue
+            length = _segment_length(segment)
+            if 4.0 <= length <= 20.0 and abs(segment[3] - segment[1]) < 0.8:
+                y = (segment[1] + segment[3]) / 2.0
+                bars.append((min(segment[0], segment[2]), y, max(segment[0], segment[2])))
+    return bars
 
-    def _edge(x: float, y: float) -> bool:
-        return min(x - x0, x1 - x, y - y0, y1 - y) <= 8.0
 
-    return _edge(segment[0], segment[1]) and _edge(segment[2], segment[3])
-
-
-def _line_bounds_view(
-    segment: tuple[float, float, float, float],
-    axis: str,
-    outline: tuple[float, float, float, float] | None,
-) -> bool:
-    """True when this dimension line spans the view's horizontal or vertical extent."""
-    if outline is None:
-        return False
-    length = _segment_length(segment)
+def _gap_interval(dim: dict, segments: list[tuple[float, float, float, float]]) -> tuple[float, float] | None:
+    """Largest uncovered run between the tips. None when the line is unbroken."""
+    axis = dim["axis"]
     if axis == "h":
-        span = outline[2] - outline[0]
-        start, end = sorted((segment[0], segment[2]))
-        overlap = min(end, outline[2]) - max(start, outline[0])
+        start, end = sorted((dim["t1"][0], dim["t2"][0]))
+        coord = dim["coord"]
+        covered: list[tuple[float, float]] = []
+        for segment in segments:
+            if abs(segment[1] - coord) > 1.4 or abs(segment[3] - coord) > 1.4:
+                continue
+            if abs(segment[2] - segment[0]) < abs(segment[3] - segment[1]):
+                continue
+            lo, hi = sorted((segment[0], segment[2]))
+            lo, hi = max(lo, start), min(hi, end)
+            if hi - lo > 1.0:
+                covered.append((lo, hi))
     else:
-        span = outline[3] - outline[1]
-        start, end = sorted((segment[1], segment[3]))
-        overlap = min(end, outline[3]) - max(start, outline[1])
-    if span <= 1.0:
-        return False
-    return length >= 0.45 * span and overlap >= 0.45 * span
+        start, end = sorted((dim["t1"][1], dim["t2"][1]))
+        coord = dim["coord"]
+        covered = []
+        for segment in segments:
+            if abs(segment[0] - coord) > 1.4 or abs(segment[2] - coord) > 1.4:
+                continue
+            if abs(segment[3] - segment[1]) < abs(segment[2] - segment[0]):
+                continue
+            lo, hi = sorted((segment[1], segment[3]))
+            lo, hi = max(lo, start), min(hi, end)
+            if hi - lo > 1.0:
+                covered.append((lo, hi))
+    covered.sort()
+    merged: list[tuple[float, float]] = []
+    for lo, hi in covered:
+        if merged and lo <= merged[-1][1] + 1.5:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    cursor = start
+    gaps: list[tuple[float, float]] = []
+    for lo, hi in merged:
+        if lo - cursor > 3.0:
+            gaps.append((cursor, lo))
+        cursor = max(cursor, hi)
+    if end - cursor > 3.0:
+        gaps.append((cursor, end))
+    if not gaps:
+        return None
+    return max(gaps, key=lambda gap: gap[1] - gap[0])
 
 
-def _near_title_word(block: dict, blocks: list[dict]) -> bool:
-    """A number sitting on the title, revision, or tolerance block."""
+def _block_in_dim(block: dict, dim: dict, gap: tuple[float, float] | None) -> bool:
     box = _bbox(block)
     if box is None:
         return False
-    if _TITLE_WORD_RE.search(str(block.get("text") or "")):
-        return True
-    for other in blocks:
-        if other is block or not _same_page(block, other):
-            continue
-        if not _TITLE_WORD_RE.search(str(other.get("text") or "")):
-            continue
-        other_box = _bbox(other)
-        if other_box is not None and _box_gap(box, other_box) <= 72.0:
-            return True
-    return False
+    cx = (box[0] + box[2]) / 2.0
+    cy = (box[1] + box[3]) / 2.0
+    if dim["axis"] == "h":
+        if gap is None:
+            start, end = sorted((dim["t1"][0], dim["t2"][0]))
+            return start - 4.0 <= cx <= end + 4.0 and abs(cy - dim["coord"]) < 22.0
+        return gap[0] - 6.0 <= cx <= gap[1] + 6.0 and abs(cy - dim["coord"]) < 20.0
+    if gap is None:
+        start, end = sorted((dim["t1"][1], dim["t2"][1]))
+        return start - 4.0 <= cy <= end + 4.0 and abs(cx - dim["coord"]) < 28.0
+    return gap[0] - 8.0 <= cy <= gap[1] + 8.0 and abs(cx - dim["coord"]) < 28.0
 
 
-def _in_title_corner(
-    box: tuple[float, float, float, float],
+def _dim_inches(text: str) -> float | None:
+    """One dimension. REF and TYP next to a flat overall stay part of that size."""
+    raw = re.sub(r"(?i)\b(?:REF|TYP)\.?", " ", str(text or ""))
+    raw = " ".join(raw.split()).strip("()[]\"'")
+    if not raw:
+        return None
+    return _bare_inches(raw)
+
+
+def _sheet_scale(span: float, value: float) -> float | None:
+    if value <= 0:
+        return None
+    scale = span / value
+    for target in _SHEET_SCALES:
+        if abs(scale - target) / target <= 0.03:
+            return target
+    return None
+
+
+def _stacked_inches(blocks: list[dict], bars: list[tuple[float, float, float]]) -> float | None:
+    """Whole number plus a numerator over a denominator, with a fraction-bar line."""
+    digits: list[dict] = []
+    for block in blocks:
+        box = _bbox(block)
+        text = " ".join(str(block.get("text") or "").split())
+        if box is None or not re.fullmatch(r"\d{1,2}", text):
+            continue
+        digits.append(block)
+    best: float | None = None
+    for index, upper in enumerate(digits):
+        for lower in digits[index + 1 :]:
+            upper_box, lower_box = _bbox(upper), _bbox(lower)
+            if upper_box is None or lower_box is None:
+                continue
+            if abs((upper_box[0] + upper_box[2]) / 2.0 - (lower_box[0] + lower_box[2]) / 2.0) > 10.0:
+                continue
+            if upper_box[1] > lower_box[1]:
+                upper, lower = lower, upper
+                upper_box, lower_box = lower_box, upper_box
+            try:
+                numerator = int(" ".join(str(upper.get("text") or "").split()))
+                denominator = int(" ".join(str(lower.get("text") or "").split()))
+            except ValueError:
+                continue
+            if denominator not in _STACK_FRACTION_DENS or not 0 < numerator < denominator:
+                continue
+            mid_y = (upper_box[3] + lower_box[1]) / 2.0
+            mid_x = (upper_box[0] + lower_box[2]) / 2.0
+            if not any(abs(bar[1] - mid_y) < 7.0 and bar[0] - 6.0 <= mid_x <= bar[2] + 6.0 for bar in bars):
+                continue
+            whole = 0.0
+            stack_top = min(upper_box[1], lower_box[1])
+            stack_bottom = max(upper_box[3], lower_box[3])
+            nearest: tuple[float, float] | None = None
+            for block in blocks:
+                if block is upper or block is lower:
+                    continue
+                box = _bbox(block)
+                token = " ".join(str(block.get("text") or "").split())
+                if box is None or not re.fullmatch(r"\d+", token):
+                    continue
+                gap = min(upper_box[0], lower_box[0]) - box[2]
+                center_y = (box[1] + box[3]) / 2.0
+                if not (-8.0 <= gap <= 40.0 and stack_top - 8.0 <= center_y <= stack_bottom + 8.0):
+                    continue
+                if nearest is None or gap < nearest[0]:
+                    nearest = (gap, float(token))
+            if nearest is not None:
+                whole = nearest[1]
+            value = whole + numerator / denominator
+            if best is None or value > best:
+                best = value
+    return best
+
+
+def _gap_value(
+    blocks: list[dict],
+    dim: dict,
+    segments: list[tuple[float, float, float, float]],
+    bars: list[tuple[float, float, float]],
+) -> float | None:
+    gap = _gap_interval(dim, segments)
+    picked = [block for block in blocks if _block_in_dim(block, dim, gap)]
+    stacked = _stacked_inches(picked, bars)
+    if stacked is not None:
+        return stacked
+    values: list[float] = []
+    for block in picked:
+        value = _dim_inches(str(block.get("text") or ""))
+        if value is not None and value >= 0.15:
+            values.append(value)
+    scaled = [value for value in values if _sheet_scale(dim["span"], value) is not None]
+    if len(scaled) == 1:
+        return scaled[0]
+    if len(values) == 1:
+        return values[0]
+    return None
+
+
+def _on_page_edge(point: tuple[float, float], page_rect: tuple[float, float, float, float] | None) -> bool:
+    if page_rect is None:
+        return False
+    x0, y0, x1, y1 = page_rect
+    return min(point[0] - x0, x1 - point[0], point[1] - y0, y1 - point[1]) <= 18.0
+
+
+def _frame_rect(
+    rect: tuple[float, float, float, float],
     page_rect: tuple[float, float, float, float] | None,
 ) -> bool:
     if page_rect is None:
         return False
-    width = page_rect[2] - page_rect[0]
-    height = page_rect[3] - page_rect[1]
-    if width < 10.0 or height < 10.0:
+    near = (
+        rect[0] - page_rect[0] <= 24.0,
+        page_rect[2] - rect[2] <= 24.0,
+        rect[1] - page_rect[1] <= 24.0,
+        page_rect[3] - rect[3] <= 24.0,
+    )
+    return sum(bool(item) for item in near) >= 3
+
+
+def _view_box(
+    drawings: list | None,
+    label_box: tuple[float, float, float, float],
+    page_rect: tuple[float, float, float, float] | None,
+    page: object,
+) -> tuple[float, float, float, float] | None:
+    """Part outline above the FLAT PATTERN label, not the sheet frame.
+
+    The label sits under that view. The closest outline above it is the view.
+    """
+    label_x = (label_box[0] + label_box[2]) / 2.0
+    boxes: list[tuple[float, float, float, float]] = []
+    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for drawing in _drawings_on_page(drawings, page):
+        kind = _path_kind(drawing)
+        width = _path_width(drawing)
+        solid = _is_solid(drawing.get("dashes"))
+        for item in drawing.get("items") or []:
+            rect = _as_rect(item)
+            if rect is not None:
+                if _frame_rect(rect, page_rect):
+                    continue
+                if rect[3] <= label_box[1] + 4.0:
+                    boxes.append(rect)
+                continue
+            if kind not in {"s", "fs", ""} or not solid:
+                continue
+            if width != 0.0 and not (0.66 <= width <= 1.35):
+                continue
+            segment = _as_line(item)
+            if segment is None or _segment_length(segment) < 2.0:
+                continue
+            start = (segment[0], segment[1])
+            end = (segment[2], segment[3])
+            if _on_page_edge(start, page_rect) and _on_page_edge(end, page_rect):
+                continue
+            if max(start[1], end[1]) > label_box[1] + 4.0:
+                continue
+            segments.append((start, end))
+    components: list[dict] = []
+    for start, end in segments:
+        box = (
+            min(start[0], end[0]),
+            min(start[1], end[1]),
+            max(start[0], end[0]),
+            max(start[1], end[1]),
+        )
+        placed = False
+        for component in components:
+            other = component["box"]
+            if (
+                box[0] <= other[2] + 30.0
+                and other[0] <= box[2] + 30.0
+                and box[1] <= other[3] + 30.0
+                and other[1] <= box[3] + 30.0
+            ):
+                component["box"] = (
+                    min(other[0], box[0]),
+                    min(other[1], box[1]),
+                    max(other[2], box[2]),
+                    max(other[3], box[3]),
+                )
+                placed = True
+                break
+        if not placed:
+            components.append({"box": box})
+    changed = True
+    while changed:
+        changed = False
+        for index in range(len(components)):
+            for other_index in range(index + 1, len(components)):
+                left, right = components[index]["box"], components[other_index]["box"]
+                if (
+                    left[0] <= right[2] + 30.0
+                    and right[0] <= left[2] + 30.0
+                    and left[1] <= right[3] + 30.0
+                    and right[1] <= left[3] + 30.0
+                ):
+                    components[index]["box"] = (
+                        min(left[0], right[0]),
+                        min(left[1], right[1]),
+                        max(left[2], right[2]),
+                        max(left[3], right[3]),
+                    )
+                    components.pop(other_index)
+                    changed = True
+                    break
+            if changed:
+                break
+    boxes.extend(component["box"] for component in components)
+    best: tuple[float, float, tuple[float, float, float, float]] | None = None
+    for box in boxes:
+        if box[2] - box[0] < 20.0 or box[3] - box[1] < 8.0:
+            continue
+        below = label_box[1] - box[3]
+        if not (8.0 <= below <= 220.0):
+            continue
+        if not (box[0] - 80.0 <= label_x <= box[2] + 80.0):
+            continue
+        area = (box[2] - box[0]) * (box[3] - box[1])
+        if best is None or below < best[0] - 12.0 or (abs(below - best[0]) <= 12.0 and area > best[1]):
+            best = (below, area, box)
+    return None if best is None else best[2]
+
+
+def _span_matches(span: float, extent: float) -> bool:
+    if extent <= 1.0:
         return False
-    cx = (box[0] + box[2]) / 2.0
-    cy = (box[1] + box[3]) / 2.0
-    return cx >= page_rect[0] + 0.62 * width and cy >= page_rect[1] + 0.70 * height
+    return abs(span - extent) <= max(1.6, 0.004 * extent)
+
+
+def _geometry_on_page(
+    label: dict,
+    blocks: list[dict],
+    drawings: list | None,
+) -> tuple[tuple[float, float] | None, bool]:
+    label_box = _bbox(label)
+    if label_box is None:
+        return None, False
+    page = label.get("page")
+    page_drawings = _drawings_on_page(drawings, page)
+    outline = _view_box(page_drawings, label_box, _page_rect(page_drawings), page)
+    if outline is None:
+        return None, False
+    arrows = _arrow_tips(page_drawings, page)
+    dims = _pair_arrow_dims(arrows)
+    segments = _dim_segments(page_drawings, page)
+    bars = _fraction_bars(page_drawings, page)
+    measured: list[tuple[str, float, float, float]] = []
+    for dim in dims:
+        value = _gap_value(blocks, dim, segments, bars)
+        scale = _sheet_scale(dim["span"], value) if value is not None else None
+        if value is None or scale is None or not 0.2 <= value <= _MAX_BLANK_IN:
+            continue
+        measured.append((dim["axis"], value, scale, dim["span"]))
+    width = outline[2] - outline[0]
+    height = outline[3] - outline[1]
+
+    def _axis_hits(axis: str, extent: float) -> list[tuple[float, float]]:
+        hits: list[tuple[float, float]] = []
+        for item_axis, value, scale, span in measured:
+            if item_axis != axis or not _span_matches(span, extent):
+                continue
+            if any(abs(value - kept) < 1.0 / 64.0 for kept, _scale in hits):
+                continue
+            hits.append((value, scale))
+        return hits
+
+    horizontal = _axis_hits("h", width)
+    vertical = _axis_hits("v", height)
+    if len(horizontal) == 1 and len(vertical) == 1 and horizontal[0][1] == vertical[0][1]:
+        return (horizontal[0][0], vertical[0][0]), False
+    if horizontal or vertical:
+        return None, True
+    return None, False
+
+
+def _geometry_flat_pair(
+    blocks: list[dict],
+    drawings: list | None,
+) -> tuple[tuple[float, float] | None, bool]:
+    """Printed flat width and length from dimension arrows, or unclear."""
+    labels = [
+        block
+        for block in blocks
+        if _bbox(block) is not None and _FLAT_LABEL_RE.search(str(block.get("text") or ""))
+    ]
+    if not labels:
+        return None, False
+    pairs: list[tuple[float, float]] = []
+    unclear = False
+    for label in labels:
+        pair, bad = _geometry_on_page(
+            label,
+            [block for block in blocks if _same_page(label, block)],
+            drawings,
+        )
+        if bad:
+            unclear = True
+        elif pair is not None:
+            pairs.append(pair)
+    unique = _unique_pairs(pairs)
+    if len(unique) == 1 and not unclear:
+        return unique[0], False
+    if len(unique) > 1 or unclear:
+        return None, True
+    return None, False
 
 
 def _fraction_den(text: str) -> int | None:
@@ -1212,9 +1581,10 @@ def _pure_fraction(text: str) -> tuple[int, int] | None:
 
 
 def _join_stacked_fraction_blocks(blocks: list[dict]) -> list[dict]:
-    """Join ``44`` ``1`` ``/`` ``16`` into one 44 1/16 dimension.
+    """Join a whole number, a numerator, and a denominator into one dimension.
 
     The pieces can sit on separate PDF spans, including a vertical offset.
+    A slash character is optional. A fraction-bar line is handled separately.
     A denominator with no numerator above it stays a normal dimension.
     """
     rows: list[tuple[int, dict, tuple[float, float, float, float] | None, str]] = []
@@ -1327,34 +1697,22 @@ def _join_stacked_fraction_blocks(blocks: list[dict]) -> list[dict]:
     return kept
 
 
-def _largest_overall(values: list[float]) -> tuple[float | None, bool]:
-    """Largest overall. Two close sizes on the same axis are not conclusive."""
-    if not values:
-        return None, False
-    top = max(values)
-    rivals = [value for value in values if abs(value - top) > 0.05 and value >= top * 0.7]
-    if rivals:
-        return None, True
-    return top, False
-
-
-def _scale_disagrees(
-    horizontal: float,
-    vertical: float,
-    outline: tuple[float, float, float, float] | None,
-) -> bool:
-    """The two overalls should share the view's drawn scale, when it is known."""
-    if outline is None:
+def _near_title_word(block: dict, blocks: list[dict]) -> bool:
+    """A number sitting on the title, revision, or tolerance block."""
+    box = _bbox(block)
+    if box is None:
         return False
-    drawn_w = (outline[2] - outline[0]) / 72.0
-    drawn_h = (outline[3] - outline[1]) / 72.0
-    if drawn_w < 0.4 or drawn_h < 0.4:
-        return False
-    scale_w = horizontal / drawn_w
-    scale_h = vertical / drawn_h
-    if min(scale_w, scale_h) <= 0:
-        return False
-    return max(scale_w, scale_h) / min(scale_w, scale_h) > 3.0
+    if _TITLE_WORD_RE.search(str(block.get("text") or "")):
+        return True
+    for other in blocks:
+        if other is block or not _same_page(block, other):
+            continue
+        if not _TITLE_WORD_RE.search(str(other.get("text") or "")):
+            continue
+        other_box = _bbox(other)
+        if other_box is not None and _box_gap(box, other_box) <= 72.0:
+            return True
+    return False
 
 
 def _position_pair(
@@ -1363,14 +1721,21 @@ def _position_pair(
     thickness: float | None,
     drawings: list | None = None,
 ) -> tuple[tuple[float, float] | None, bool]:
-    """Largest horizontal and vertical overalls of one flat-pattern view.
+    """Horizontal and vertical overalls of one flat-pattern view.
 
-    Arrowheaded dimension lines say which way a number measures. Unidirectional
-    text is not a vertical dimension. Title-block numbers are not overalls.
-    The bool is True when those overalls conflict or are not a safe blank.
+    With vectors, the size is the tip-to-tip length of the dimension whose
+    arrows bound the outline above the FLAT PATTERN label. Text direction is
+    used only when the PDF has no vectors. The bool is True when those
+    overalls conflict or are not a safe blank.
     """
     blocks = _join_stacked_fraction_blocks(_as_blocks(text_blocks))
-    have_drawings = bool(drawings)
+    if drawings:
+        pair, unclear = _geometry_flat_pair(blocks, drawings)
+        if unclear:
+            return None, True
+        if pair is not None and not _accepted_size(pair[0], pair[1], text, thickness):
+            return None, True
+        return pair, False
     labels: list[tuple[dict, tuple[float, float, float, float]]] = []
     dims: list[tuple[dict, tuple[float, float, float, float], float]] = []
     for block in blocks:
@@ -1390,52 +1755,24 @@ def _position_pair(
     pairs: list[tuple[float, float]] = []
     conflict = False
     for label, label_box in labels:
-        segments, rects, page_rect = _page_geometry(drawings, label.get("page"))
-        dim_lines = _dimension_lines(segments) if have_drawings else []
-        outline = (
-            _view_outline(rects, segments, dim_lines, label_box, page_rect)
-            if have_drawings
-            else None
-        )
         grouped: dict[str, list[tuple[float, float]]] = {"h": [], "v": []}
         for block, box, value in dims:
             if not _same_page(label, block):
                 continue
             if _box_gap(label_box, box) > _NEAR_LABEL_PT:
                 continue
-            geom_axis, dim_line = (_geometry_axis(box, dim_lines) if have_drawings else (None, None))
-            if geom_axis is not None:
-                axis = geom_axis
-            elif not have_drawings:
-                axis = _text_axis(block)
-            elif _text_axis(block) == "v":
-                axis = "v"
-            else:
-                axis = None
+            if _near_title_word(block, blocks):
+                continue
+            axis = _text_axis(block)
             if axis is None:
                 continue
-            bounds = bool(dim_line is not None and _line_bounds_view(dim_line, axis, outline))
-            titled = _near_title_word(block, blocks) or _in_title_corner(box, page_rect)
-            if titled and not bounds:
-                continue
-            if outline is not None and not bounds and _box_gap(box, outline) > 180.0:
-                continue
-            if have_drawings and geom_axis is not None and outline is not None and not bounds:
-                continue
             grouped[axis].append((value, _box_gap(label_box, box)))
-        if have_drawings:
-            horizontal, horizontal_bad = _largest_overall([value for value, _gap in grouped["h"]])
-            vertical, vertical_bad = _largest_overall([value for value, _gap in grouped["v"]])
-        else:
-            horizontal, horizontal_bad = _axis_overall(grouped["h"])
-            vertical, vertical_bad = _axis_overall(grouped["v"])
+        horizontal, horizontal_bad = _axis_overall(grouped["h"])
+        vertical, vertical_bad = _axis_overall(grouped["v"])
         if horizontal_bad or vertical_bad:
             conflict = True
             continue
         if horizontal is None or vertical is None:
-            continue
-        if _scale_disagrees(horizontal, vertical, outline):
-            conflict = True
             continue
         if not _accepted_size(horizontal, vertical, text, thickness):
             conflict = True
@@ -1449,6 +1786,7 @@ def _position_pair(
     return None, False
 
 
+
 def _drawing_flat_decision(
     text: str,
     thickness_in: float | None,
@@ -1458,8 +1796,10 @@ def _drawing_flat_decision(
     """Trusted blank, or a flag when a real flat view has no safe size.
 
     An inline ``W x L`` is used in the order printed. Separate overalls are
-    the largest horizontal and vertical dimensions whose arrowheads bound the
-    flat-pattern view. Text direction is used only when the PDF has no vectors.
+    the tip-to-tip size of the dimension lines on the outline above the
+    FLAT PATTERN label: two collinear halves with an arrow at each outer
+    end, or one unbroken line with an arrow at both ends. Text in the gap
+    stays horizontal. Text direction is used only when the PDF has no vectors.
     A bare template label is ignored. Anything unsure is a flag.
     """
     if not _FLAT_LABEL_RE.search(text or ""):
@@ -1489,10 +1829,11 @@ def _sheet_radius_line(line: str) -> bool:
 def round_stock_bend_evidence(text: str) -> bool:
     """Tube or round stock that is formed, not a straight cut.
 
-    CLR, a centerline radius, an ``R`` plus a decimal such as ``R5.91``,
-    a bend table, a degree mark next to a tube leg, or the word BEND with an
-    OD or wall callout. ``ANGULAR: BEND`` and ``BEND ANGLE =`` are title-block
-    notes, not a bend.
+    CLR, a centerline radius, a bend table, a degree mark next to a tube
+    leg, or the word BEND with an OD or wall callout. An ``R`` plus a decimal
+    counts only when the same text also says tube, OD, wall, or CLR. A corner
+    radius on a flat plate does not. ``ANGULAR: BEND`` and ``BEND ANGLE =``
+    are title-block notes, not a bend.
     """
     blob = str(text or "")
     if _ROUND_STOCK_BEND_RE.search(blob):
@@ -1506,16 +1847,19 @@ def round_stock_bend_evidence(text: str) -> bool:
             and re.search(r"(?i)\bLENGTH\b", window)
         ):
             return True
-    for line in lines:
-        if _sheet_radius_line(line) or _TITLE_ANGLE_RE.search(line):
-            continue
-        for match in _TUBE_R_RE.finditer(line):
-            try:
-                radius = float(match.group(1))
-            except ValueError:
+    # A corner callout such as R1.38 is not a tube unless the drawing also
+    # names the stock as tube, OD, or wall.
+    if _TUBE_STOCK_RE.search(blob):
+        for line in lines:
+            if _sheet_radius_line(line) or _TITLE_ANGLE_RE.search(line):
                 continue
-            if radius >= 1.0:
-                return True
+            for match in _TUBE_R_RE.finditer(line):
+                try:
+                    radius = float(match.group(1))
+                except ValueError:
+                    continue
+                if radius >= 1.0:
+                    return True
     kept = [line for line in lines if not _TITLE_ANGLE_RE.search(line)]
     kept_blob = "\n".join(kept)
     has_bend_word = bool(re.search(r"(?i)(?<![A-Z])BENDS?\b", kept_blob))

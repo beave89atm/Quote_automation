@@ -673,24 +673,48 @@ def _arrowed(p1: tuple[float, float], p2: tuple[float, float], axis: str) -> lis
 
 
 def _flat_view_drawings() -> list[dict]:
-    items = [("re", (120, 160, 420, 280), 1)]
-    items.extend(_arrowed((120, 320), (420, 320), "h"))
-    items.extend(_arrowed((80, 160), (80, 280), "v"))
-    items.extend(_arrowed((180, 220), (220, 220), "h"))
-    return [{"page_rect": (0, 0, 612, 792), "items": items}]
+    """Unbroken dimension lines, arrow ticks at both ends, label under the part.
+
+    18 3/16 x 6.50 at 18 pt/in. The sheet frame is a separate rect.
+    """
+    items = [
+        ("re", (160, 180, 487.375, 297), 1),
+        ("re", (20, 20, 590, 770), 1),
+    ]
+    items.extend(_arrowed((160, 150), (487.375, 150), "h"))
+    items.extend(_arrowed((128, 180), (128, 297), "v"))
+    return [
+        {
+            "type": "s",
+            "width": 0.58,
+            "dashes": "[] 0",
+            "page_rect": (0, 0, 612, 792),
+            "items": items,
+        }
+    ]
 
 
 def _flat_view_blocks() -> list[dict]:
     # Every dimension string is horizontal. The arrowheads carry the axis.
     return [
-        {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (200, 128, 340, 144)},
-        {"text": "18 3", "dir": (1, 0), "bbox": (230, 300, 290, 314)},
-        {"text": "16", "dir": (1, 0), "bbox": (268, 314, 292, 328)},
-        {"text": "6.50", "dir": (1, 0), "bbox": (36, 208, 72, 222)},
-        {"text": "1.25", "dir": (1, 0), "bbox": (186, 204, 220, 218)},
+        {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (250, 330, 390, 346)},
+        {"text": "18 3", "dir": (1, 0), "bbox": (300, 124, 360, 138)},
+        {"text": "16", "dir": (1, 0), "bbox": (340, 140, 364, 154)},
+        {"text": "6.50", "dir": (1, 0), "bbox": (96, 224, 126, 238)},
+        {"text": "1.25", "dir": (1, 0), "bbox": (220, 220, 260, 234)},
         {"text": "SIZE", "dir": (1, 0), "bbox": (500, 700, 540, 714)},
         {"text": "125", "dir": (1, 0), "bbox": (500, 720, 540, 734)},
     ]
+
+
+def _arrowhead(tip: tuple[float, float], direction: tuple[float, float]) -> list[tuple]:
+    """Filled arrowhead, about 9.5 pt long and 2.9 pt across. Tip at the line end."""
+    dx, dy = direction
+    base = (tip[0] - dx * 9.5, tip[1] - dy * 9.5)
+    px, py = -dy * 1.45, dx * 1.45
+    left = (base[0] + px, base[1] + py)
+    right = (base[0] - px, base[1] - py)
+    return [("l", tip, left), ("l", left, right), ("l", right, tip)]
 
 
 def test_stacked_fraction_spans_read_as_one_size():
@@ -756,6 +780,205 @@ def test_dimension_lines_pair_unidirectional_flat_overalls(monkeypatch):
     assert plan.flat_source == "drawing flat pattern"
     assert plan.width_in == pytest.approx(18.1875)
     assert plan.length_in == pytest.approx(6.50)
+
+
+def _dim_stroke(items: list[tuple]) -> dict:
+    return {
+        "type": "s",
+        "width": 0.58,
+        "dashes": "[] 0",
+        "page_rect": (0, 0, 612, 792),
+        "items": items,
+    }
+
+
+def _part_and_frame(box: tuple[float, float, float, float]) -> dict:
+    return {
+        "type": "s",
+        "width": 0.72,
+        "dashes": "[] 0",
+        "page_rect": (0, 0, 612, 792),
+        "items": [("re", box, 1), ("re", (16, 16, 596, 776), 1)],
+    }
+
+
+def test_split_halves_read_the_outline_above_the_label(monkeypatch):
+    """Two collinear halves, outer arrowheads only, text in the gap.
+
+    All dimension text is horizontal. The sheet frame is on the page and is
+    not the flat blank. Arrowheads share one path.
+    """
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("formula ran even though the flat overalls were on the view")
+
+    monkeypatch.setattr("secturafab.flat_pattern.flat_length_in", _boom)
+    # 10.50 x 4.25 in at 18 pt/in.
+    part = (180.0, 220.0, 369.0, 296.5)
+    arrows = []
+    arrows.extend(_arrowhead((180.0, 190.0), (-1.0, 0.0)))
+    arrows.extend(_arrowhead((369.0, 190.0), (1.0, 0.0)))
+    arrows.extend(_arrowhead((150.0, 220.0), (0.0, -1.0)))
+    arrows.extend(_arrowhead((150.0, 296.5), (0.0, 1.0)))
+    drawings = [
+        _part_and_frame(part),
+        _dim_stroke(
+            [
+                ("l", (180.0, 190.0), (245.0, 190.0)),
+                ("l", (369.0, 190.0), (305.0, 190.0)),
+                ("l", (150.0, 220.0), (150.0, 240.0)),
+                ("l", (150.0, 296.5), (150.0, 270.0)),
+                # Extension lines, same weight as the dimension lines.
+                ("l", (180.0, 214.0), (180.0, 181.0)),
+                ("l", (369.0, 214.0), (369.0, 181.0)),
+            ]
+        ),
+        {"type": "f", "width": 0, "page_rect": (0, 0, 612, 792), "items": arrows},
+    ]
+    blocks = [
+        {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (220, 330, 340, 346)},
+        {"text": "10.50", "dir": (1, 0), "bbox": (250, 176, 300, 190)},
+        {"text": "4.25", "dir": (1, 0), "bbox": (112, 246, 148, 260)},
+    ]
+    decision = evaluate_formed(
+        _formed_plate("UP 90° R.13", "UP 90° R.13", "FLAT PATTERN", "10.50", "4.25"),
+        thickness_in=0.125,
+        drawings=drawings,
+        text_blocks=blocks,
+    )
+    assert decision is not None
+    assert decision.flag is None
+    assert decision.length_source == "drawing flat pattern"
+    assert decision.width_in == pytest.approx(10.50)
+    assert decision.developed_length_in == pytest.approx(4.25)
+
+
+def test_fraction_bar_and_ref_overalls_are_the_blank(monkeypatch):
+    """A vector fraction bar stacks the size. REF beside an overall still counts."""
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("formula ran on a printed flat size")
+
+    monkeypatch.setattr("secturafab.flat_pattern.flat_length_in", _boom)
+    # 9 1/8 x 2.50 in at 18 pt/in. Numerator and denominator overlap, so only the bar joins them.
+    part = (200.0, 210.0, 364.25, 255.0)
+    arrows = []
+    arrows.extend(_arrowhead((200.0, 180.0), (-1.0, 0.0)))
+    arrows.extend(_arrowhead((364.25, 180.0), (1.0, 0.0)))
+    arrows.extend(_arrowhead((170.0, 210.0), (0.0, -1.0)))
+    arrows.extend(_arrowhead((170.0, 255.0), (0.0, 1.0)))
+    drawings = [
+        _part_and_frame(part),
+        _dim_stroke(
+            [
+                ("l", (200.0, 180.0), (240.0, 180.0)),
+                ("l", (364.25, 180.0), (320.0, 180.0)),
+                ("l", (170.0, 210.0), (170.0, 220.0)),
+                ("l", (170.0, 255.0), (170.0, 242.0)),
+            ]
+        ),
+        {"type": "f", "width": 0, "page_rect": (0, 0, 612, 792), "items": arrows},
+        {
+            "type": "s",
+            "width": 0.43,
+            "dashes": "[] 0",
+            "page_rect": (0, 0, 612, 792),
+            "items": [("l", (264.0, 169.0), (276.0, 169.0))],
+        },
+    ]
+    blocks = [
+        {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (230, 290, 350, 306)},
+        {"text": "9", "dir": (1, 0), "bbox": (244, 164, 260, 178)},
+        {"text": "1", "dir": (1, 0), "bbox": (266, 158, 274, 172)},
+        {"text": "8", "dir": (1, 0), "bbox": (266, 166, 274, 180)},
+        {"text": "2.50", "dir": (1, 0), "bbox": (132, 222, 168, 236)},
+    ]
+    decision = evaluate_formed(
+        _formed_plate("UP 90° R.13", "FLAT PATTERN", "9", "1", "8", "2.50"),
+        thickness_in=0.125,
+        drawings=drawings,
+        text_blocks=blocks,
+    )
+    assert decision is not None
+    assert decision.flag is None
+    assert decision.width_in == pytest.approx(9.125)
+    assert decision.developed_length_in == pytest.approx(2.50)
+
+    # 8.00 REF x 3.25 in. REF is its own span in the gap.
+    ref_part = (180.0, 200.0, 324.0, 258.5)
+    ref_arrows = []
+    ref_arrows.extend(_arrowhead((180.0, 170.0), (-1.0, 0.0)))
+    ref_arrows.extend(_arrowhead((324.0, 170.0), (1.0, 0.0)))
+    ref_arrows.extend(_arrowhead((150.0, 200.0), (0.0, -1.0)))
+    ref_arrows.extend(_arrowhead((150.0, 258.5), (0.0, 1.0)))
+    ref_drawings = [
+        _part_and_frame(ref_part),
+        _dim_stroke(
+            [
+                ("l", (180.0, 170.0), (220.0, 170.0)),
+                ("l", (324.0, 170.0), (280.0, 170.0)),
+                ("l", (150.0, 200.0), (150.0, 214.0)),
+                ("l", (150.0, 258.5), (150.0, 244.0)),
+            ]
+        ),
+        {"type": "f", "width": 0, "page_rect": (0, 0, 612, 792), "items": ref_arrows},
+    ]
+    ref_blocks = [
+        {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (200, 300, 320, 316)},
+        {"text": "8.00 REF.", "dir": (1, 0), "bbox": (224, 156, 286, 170)},
+        {"text": "3.25", "dir": (1, 0), "bbox": (112, 218, 148, 232)},
+    ]
+    ref = evaluate_formed(
+        _formed_plate("UP 90° R.13", "FLAT PATTERN", "8.00", "REF", "3.25"),
+        thickness_in=0.125,
+        drawings=ref_drawings,
+        text_blocks=ref_blocks,
+    )
+    assert ref is not None
+    assert ref.flag is None
+    assert ref.width_in == pytest.approx(8.00)
+    assert ref.developed_length_in == pytest.approx(3.25)
+
+
+def test_inward_arrows_on_a_short_overall_still_measure_tip_to_tip(monkeypatch):
+    """One path per arrow. The short side points the arrowheads inward."""
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("formula ran on a printed flat size")
+
+    monkeypatch.setattr("secturafab.flat_pattern.flat_length_in", _boom)
+    # 5.00 x 2.00 in at 18 pt/in. The 2.00 side is too short for arrows inside.
+    part = (200.0, 200.0, 290.0, 236.0)
+    drawings = [
+        _part_and_frame(part),
+        _dim_stroke(
+            [
+                ("l", (200.0, 170.0), (230.0, 170.0)),
+                ("l", (290.0, 170.0), (260.0, 170.0)),
+                ("l", (170.0, 200.0), (170.0, 182.0)),
+                ("l", (170.0, 236.0), (170.0, 254.0)),
+            ]
+        ),
+        {"type": "f", "width": 0, "page_rect": (0, 0, 612, 792), "items": _arrowhead((200.0, 170.0), (-1.0, 0.0))},
+        {"type": "f", "width": 0, "page_rect": (0, 0, 612, 792), "items": _arrowhead((290.0, 170.0), (1.0, 0.0))},
+        {"type": "f", "width": 0, "page_rect": (0, 0, 612, 792), "items": _arrowhead((170.0, 200.0), (0.0, 1.0))},
+        {"type": "f", "width": 0, "page_rect": (0, 0, 612, 792), "items": _arrowhead((170.0, 236.0), (0.0, -1.0))},
+    ]
+    blocks = [
+        {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (210, 270, 330, 286)},
+        {"text": "5.00", "dir": (1, 0), "bbox": (232, 156, 268, 170)},
+        {"text": "2.00", "dir": (1, 0), "bbox": (132, 208, 168, 222)},
+    ]
+    decision = evaluate_formed(
+        _formed_plate("UP 90° R.13", "FLAT PATTERN", "5.00", "2.00"),
+        thickness_in=0.125,
+        drawings=drawings,
+        text_blocks=blocks,
+    )
+    assert decision is not None
+    assert decision.flag is None
+    assert decision.width_in == pytest.approx(5.00)
+    assert decision.developed_length_in == pytest.approx(2.00)
 
 
 def test_flat_over_120_in_or_without_a_vertical_line_flags(monkeypatch):
@@ -859,15 +1082,26 @@ def test_template_wording_is_a_review_not_a_formed_claim():
     assert "formed part" not in angled_notes
 
 
+def test_plain_corner_radius_is_not_a_bent_tube():
+    plate = "\n".join([_PLATE, "R1.38"])
+    plan = plan_pdf_only_part(text=plate, title="SAMPLE PLATE")
+    assert plan.route == "image_files"
+    assert "tube or round-stock" not in " ".join(plan.notes)
+
+    bare = "\n".join(["ROUND BAR", "R5.91", "2.00"])
+    bare_plan = plan_pdf_only_part(text=bare, title="ROUND BAR")
+    assert "tube or round-stock" not in " ".join(bare_plan.notes)
+
+
 def test_r_decimal_and_tube_leg_degrees_flag_as_formed():
     radius = "\n".join(
         [
-            "BENT SECTION",
             "R5.91",
-            "2.00",
+            "2.00 OD",
+            "0.120 WALL",
         ]
     )
-    plan = plan_pdf_only_part(text=radius, title="BENT SECTION")
+    plan = plan_pdf_only_part(text=radius, title="BENT TUBE")
     assert plan.route == "refuse"
     assert plan.route != "long"
     assert plan.route != "image_files"
