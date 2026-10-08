@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from secturafab.bend_op import (
+    BEND_COUNT_DRAWING_MISMATCH,
     BEND_COUNT_NOT_SET,
     BEND_COUNT_TIME_MISMATCH,
     BEND_COUNT_WRITE_ENDPOINT,
@@ -26,9 +27,14 @@ def _q10368_item() -> dict:
 
 
 def test_q10504_number_of_bends_is_3_and_time_matches():
-    count, flag = line_bend_count(_q10504_item(), formed=True)
+    count, flag = line_bend_count(_q10504_item(), formed=True, expected=3)
     assert flag is None
     assert count == 3
+
+
+def test_number_of_bends_must_match_the_drawing_count():
+    _count, flag = line_bend_count(_q10504_item(), formed=True, expected=2)
+    assert flag == BEND_COUNT_DRAWING_MISMATCH
 
 
 def test_q10368_number_of_bends_is_2_and_time_is_60():

@@ -1,0 +1,226 @@
+# Bend-line conventions the detector loads. Patterns are text-layer only.
+# Geometry roles are applied by quote_core/bend_conventions.py to PyMuPDF
+# dash patterns; they have no regex. See docs/bend_conventions.md.
+#
+# confidence: high counts, medium needs agreement, low flags, ignore is masked.
+# role: false_positive | explicit_count | count_each | multiplier | table_row
+#       | shared_note | insufficient | view_tally | not_single_plane | axis
+#       | geometry
+
+version: 1
+
+conventions:
+  - id: fp_break_sharp_edges
+    confidence: ignore
+    layer: text
+    role: false_positive
+    pattern: '(?i)\bBREAK\s+(?:ALL\s+|SHARP\s+)?EDGES\b|\bDEBURR\b|\bREMOVE\s+(?:ALL\s+)?BURRS\b'
+    note: Edge break or deburr. Not a bend.
+    sources:
+      - title: GD&T Basics — Break Edges Note
+        url: https://www.gdandtbasics.com/break-edges-note/
+
+  - id: fp_chamfer_countersink
+    confidence: ignore
+    layer: text
+    role: false_positive
+    pattern: '(?i)\bCHAMFERS?\b|\bCHAM\b|\bCOUNTER\s*SINKS?\b|\bCSINK\b|\bCSK\b'
+    note: Chamfer and countersink angles (45°, 82°, 90°, 100°) are not bends.
+    sources:
+      - title: Machinist Guides — Chamfer and countersink
+        url: https://www.machinistguides.com/chamfers/
+
+  - id: fp_bendable_title
+    confidence: ignore
+    layer: text
+    role: false_positive
+    pattern: '(?i)\bBENDABLE\b|\bBENDERS?\b|\bUNBEND\b'
+    note: Title words that contain BEND. Not a bend callout.
+
+  - id: not_single_plane_note
+    confidence: high
+    layer: text
+    role: not_single_plane
+    pattern: '(?i)\bCOMPOUND\s+BENDS?\b|\b(?:TWO|2|MULTIPLE|MULTI)[-\s]+PLANES?\b|\bNOT\s+(?:A\s+)?SINGLE\s+PLANE\b|\bBENDS?\s+NOT\s+IN\s+(?:A\s+)?SINGLE\s+PLANE\b'
+    flag: bends are not in a single plane
+    note: Axes are not parallel, so one developed length does not describe the flat.
+    sources:
+      - title: Xometry sheet metal guide — bends in the same plane
+        url: https://cdn2.hubspot.net/hubfs/340051/Design_Guides/Xometry_DesignGuide_SheetMetal.pdf
+
+  - id: axis_horizontal_bend
+    confidence: high
+    layer: text
+    role: axis
+    axis: horizontal
+    pattern: '(?i)\b(?:HORIZONTAL|HORIZ|LONGITUDINAL)\s+BENDS?\b|\bBENDS?\s+(?:HORIZONTAL|HORIZ)\b'
+
+  - id: axis_vertical_bend
+    confidence: high
+    layer: text
+    role: axis
+    axis: vertical
+    pattern: '(?i)\b(?:VERTICAL|VERT|TRANSVERSE)\s+BENDS?\b|\bBENDS?\s+(?:VERTICAL|VERT)\b'
+
+  - id: explicit_n_bend_lines
+    confidence: high
+    layer: text
+    role: explicit_count
+    pattern: '(?i)(?<!\.)\b(\d+)[ \t]+BEND[ \t]+LINES?\b'
+    note: A stated count of bend lines. The number is the count.
+
+  - id: explicit_n_bends
+    confidence: high
+    layer: text
+    role: explicit_count
+    pattern: '(?i)(?<!\.)\b(\d+)[ \t]+BENDS?\b(?![ \t]+LINES?\b)'
+    note: "N BEND or N BENDS. A decimal before the digits (6.00 then BEND) is not a count."
+
+  - id: callout_bend_up_down
+    confidence: high
+    layer: text
+    role: count_each
+    pattern: '(?i)\bBEND[ \t]+(UP|DOWN)\b(?:[ \t]+\d+(?:\.\d+)?[ \t]*(?:°|DEG(?:REE)?S?))?(?:[ \t]+R\.?[ \t]*\d+(?:[.,]\d+)?)?'
+    note: One bend per BEND UP or BEND DOWN, including metric R1.5 / R1,5.
+    sources:
+      - title: SOLIDWORKS bend notes — direction, angle, radius
+        url: https://www.cati.com/blog/solidworks-bend-note-formatting/
+      - title: CADMES — bendnoteformat.txt tokens
+        url: https://support.cadmes.com/fr/personnalisation-du-texte-des-notes-de-pliage
+
+  - id: callout_sw_up_angle_radius
+    confidence: high
+    layer: text
+    role: count_each
+    pattern: '(?i)(?<![A-Z0-9])(UP|DOWN)[ \t]+\d+(?:\.\d+)?[ \t]*(?:°|DEG(?:REE)?S?)[ \t]+R\.?[ \t]*\d+(?:[.,]\d+)?'
+    note: "Default SolidWorks-style note without the word BEND, such as UP 90° R.06 or UP 90° R1.5."
+    sources:
+      - title: SOLIDWORKS bendnoteformat.txt — direction, angle, R radius
+        url: https://forum.mycad.visiativ.com/t/solidworks-notes-de-pliage-dans-m-e-p/98215?lang=en
+
+  - id: label_bend_line
+    confidence: high
+    layer: text
+    role: count_each
+    pattern: '(?i)(?<!\d[ \t])\bBEND[ \t]+LINES?\b'
+    note: Each BEND LINE label is one bend. N BEND LINES is the explicit count instead.
+
+  - id: table_row_direction
+    confidence: high
+    layer: text
+    role: table_row
+    pattern: '(?im)^[ \t]*([A-Z]{1,3}\d+|\d+)[ \t]+(UP|DOWN)[ \t]+\d+(?:\.\d+)?[ \t]*(?:°|DEG(?:REE)?S?)?'
+    note: One data row of a bend table. ID, direction, angle.
+    sources:
+      - title: SOLIDWORKS Help — Bend Tables (radii, angles, directions, tags)
+        url: https://help.solidworks.com/2019/english/SolidWorks/sldworks/c_bend_tables.htm
+      - title: Inventor API — default columns BEND ID, DIRECTION, ANGLE, RADIUS
+        url: https://help.autodesk.com/cloudhelp/2024/ENU/Inventor-API/files/CustomTables_AddBendTableWithOptions.htm
+
+  - id: multiplier_nx
+    confidence: high
+    layer: text
+    role: multiplier
+    pattern: '(?i)\b(\d+)[ \t]*X\b'
+    note: "2X on the same line as a bend callout. A stock size such as 2 X 2 tube is not on a bend line, so it is not a multiplier."
+    sources:
+      - title: ASME Y14.5 multiplicity is the usual NX / N PLACES practice on drawings
+        url: https://www.asme.org/codes-standards/find-codes-standards/y14-5-dimensioning-tolerancing
+
+  - id: multiplier_n_places
+    confidence: high
+    layer: text
+    role: multiplier
+    pattern: '(?i)\b(\d+)[ \t]+PLACES?\b'
+    note: N PLACES on the same line as a bend callout.
+
+  - id: note_all_bends
+    confidence: medium
+    layer: text
+    role: shared_note
+    pattern: '(?i)\bALL\s+BENDS\b'
+    flag: ALL BENDS does not give a count
+    note: Shares an angle or radius. It does not say how many bends.
+
+  - id: low_bare_up_down
+    confidence: low
+    layer: text
+    role: insufficient
+    pattern: '(?i)(?<![A-Z0-9])(?:UP|DOWN)(?![A-Z0-9])'
+    flag: UP/DOWN callout has no angle and no count
+
+  - id: low_bare_angle
+    confidence: low
+    layer: text
+    role: insufficient
+    pattern: '(?i)\b\d+(?:\.\d+)?[ \t]*(?:°|DEG(?:REE)?S?)\b|(?:∠)'
+    flag: a bend angle does not give a count
+    note: "A degree dimension or the angle symbol alone. Chamfer and countersink lines are masked first."
+
+  - id: low_bend_radius
+    confidence: low
+    layer: text
+    role: insufficient
+    pattern: '(?i)\b(?:INSIDE\s+RADIUS|BEND\s+RADIUS|IR\s*[:=])'
+    flag: a bend radius does not give a count
+
+  - id: low_formed_word
+    confidence: low
+    layer: text
+    role: insufficient
+    pattern: '(?i)\bFORMED\b'
+    flag: FORMED does not give a count
+
+  - id: low_press_brake
+    confidence: low
+    layer: text
+    role: insufficient
+    pattern: '(?i)\bPRESS\s+BRAKE\b|\bBRAKE\s+PRESS\b|\bBRAKE\b'
+    flag: a press brake note does not give a count
+
+  - id: low_bend_word
+    confidence: low
+    layer: text
+    role: insufficient
+    pattern: '(?i)\bBENDS?\b'
+    flag: BEND does not give a count
+
+  - id: low_formed_views
+    confidence: low
+    layer: text
+    role: view_tally
+    min_matches: 2
+    pattern: '(?i)\b(?:FRONT|SIDE|TOP|BOTTOM|LEFT|RIGHT|ISO|FLAT)\s+VIEW\b'
+    flag: view-only shape has no bend callouts
+
+  - id: geom_center_line
+    confidence: medium
+    layer: geometry
+    role: geometry
+    dash: center
+    note: "PyMuPDF dash array of long-short-long-short on a straight stroke at least 1 inch long. ASME Y14.2 center lines are long/short dashes. Y14.2 does not name them as bend lines; Inventor and Solid Edge draw bend centerlines in that style."
+    sources:
+      - title: ASME Y14.2-2014 — center lines, section 4.7
+        url: https://www.asme.org/codes-standards/find-codes-standards/y14-2-line-conventions-lettering/2014
+      - title: Inventor — bend notes attach to bend centerlines
+        url: https://help.autodesk.com/cloudhelp/2023/ENU/Inventor-Help/files/GUID-29BEB900-C220-49DB-B11D-4F69DEC211E7.htm
+
+  - id: geom_phantom_line
+    confidence: medium
+    layer: geometry
+    role: geometry
+    dash: phantom
+    note: "PyMuPDF dash array of long dash plus two short dashes. ASME Y14.2 phantom lines (section 4.12) are alternate position and reference geometry, not an official bend-line style. Some flat patterns still export bend lines with that dash pattern."
+    sources:
+      - title: ASME Y14.2-2014 — phantom lines, section 4.12
+        url: https://www.asme.org/codes-standards/find-codes-standards/y14-2-line-conventions-lettering/2014
+      - title: SOLIDWORKS document properties — separate up and down bend-line styles
+        url: https://my.solidworks.com/reader/onlinehelp/2021%252Fenglish%252Fswconnected%252Fswdotworks%252Fhidd_options_sheetmetal_dpp.htm/document-properties-sheet-metal
+
+  - id: geom_perpendicular_families
+    confidence: high
+    layer: geometry
+    role: geometry
+    dash: perpendicular
+    flag: bends are not in a single plane
+    note: Two long center or phantom directions about 90° apart. Hidden-line dashes and solid lines are not bend lines.

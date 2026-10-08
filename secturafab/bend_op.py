@@ -23,6 +23,9 @@ BEND_COUNT_FIELD = "NumberOfBends"
 BEND_COUNT_WRITE_ENDPOINT = None
 BEND_COUNT_NOT_SET = "Bend op Number of Bends not set"
 BEND_COUNT_TIME_MISMATCH = "Bend op Time is not NumberOfBends × TimePerBend"
+BEND_COUNT_DRAWING_MISMATCH = (
+    "Bend op Number of Bends does not match the drawing count"
+)
 BEND_COUNT_WRITE_GAP_NOTE = (
     "No captured request writes NumberOfBends. "
     "Reads are /Quote/QuoteItem_ReadTreeListData and /Quote/GetItem_AddView. "
@@ -63,11 +66,17 @@ def _whole_number(value: Any) -> int | None:
     return value
 
 
-def line_bend_count(item: dict[str, Any] | None, *, formed: bool) -> tuple[int, str | None]:
+def line_bend_count(
+    item: dict[str, Any] | None,
+    *,
+    formed: bool,
+    expected: int | None = None,
+) -> tuple[int, str | None]:
     """Line bend count, or ``(0, flag)`` when a formed line is not gold.
 
     A flat part (no bend signals) is count 0 and does not need a Bend op.
-    A formed part needs one Bend param, ``NumberOfBends`` >= 1, and
+    A formed part needs one Bend param, ``NumberOfBends`` equal to the
+    drawing count when that count is known, and
     ``Time == NumberOfBends × TimePerBend``.
     """
     if not formed:
@@ -84,4 +93,6 @@ def line_bend_count(item: dict[str, Any] | None, *, formed: bool) -> tuple[int, 
     units = str(entry.get("Time_Units") or "second").casefold()
     if per_bend is None or total is None or units != "second" or total != count * per_bend:
         return 0, BEND_COUNT_TIME_MISMATCH
+    if expected is not None and count != expected:
+        return 0, BEND_COUNT_DRAWING_MISMATCH
     return count, None

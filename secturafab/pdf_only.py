@@ -9,12 +9,12 @@ config grade (A36 unless changed) and still pushes. Any other family, or a
 drawing that does not name a family, is flagged and not given a grade.
 
 A flat plate with no bend callouts has bend count 0 and no Bend op.
-A bend callout (UP/DOWN, a bend angle, a bend radius, FORMED, BEND, a
-brake note, multiple views of a formed shape, a hem, or an offset/jog)
-is ``FLAG: formed part`` and does not go through as a flat laser plate.
-Callouts do not set the line's bend count. That count is the Bend
-operation's ``NumberOfBends``. A formed drawing that does not state a
-flat L×W stops before a quote is created. Nothing is invented for the flat.
+A formed part's bend count comes from the conventions library. The flat
+length comes from the press-brake chart (K-factor, allowance, or
+deduction). That flat L×W is what Image Files would stamp. The same count
+has to be written on the Bend operation as ``NumberOfBends``. Nothing
+captured in this repo writes that field, so the push stops before a quote
+is created with ``FLAG: bend count``.
 """
 
 from __future__ import annotations
@@ -27,7 +27,8 @@ from quote_core.config import load_shop_rates
 from quote_core.drawing_title import extract_title_from_pdf_text
 from quote_core.part_materials import _sectura_material_string, parse_material_block
 
-from .flat_pattern import formed_flag
+from .bend_op import BEND_COUNT_NOT_SET, BEND_COUNT_WRITE_GAP_NOTE
+from .flat_pattern import evaluate_formed
 from .item_desc import parse_plate_flats
 from .line_item_ops import parse_cut_length
 from .push import (
@@ -57,6 +58,8 @@ class PdfOnlyPlan:
     notes: tuple[str, ...] = ()
     bend_count: int | None = None
     line_note: str = ""
+    operations: tuple[str, ...] = ()
+    flats_from_chart: bool = False
 
 
 def _flag(field: str, detail: str) -> str:
@@ -264,6 +267,7 @@ def plan_pdf_only_part(
     text: str,
     title: str = "",
     part_key: str = "",
+    drawings: list | None = None,
 ) -> PdfOnlyPlan:
     """Decide Image Files vs Long from drawing text. Never invent a dimension."""
     blob, drawing_title = _classify_blob(text, title, part_key)
@@ -288,24 +292,53 @@ def plan_pdf_only_part(
             notes=_with_grade(grade),
         )
 
-    def _formed_refuse() -> PdfOnlyPlan | None:
-        """A bend callout is not a flat laser plate. Do not invent L×W."""
+    def _apply_formed() -> PdfOnlyPlan | None:
+        """Refuse a bend callout, or develop a simple flat from the chart."""
         if linear and not plate:
             return None
-        reason = formed_flag(f"{text}\n{title}")
-        if not reason:
+        decision = evaluate_formed(
+            f"{text}\n{title}",
+            material=None if grade.blocks else material,
+            thickness_in=float(thickness_in) if thickness_in is not None else None,
+            drawings=drawings,
+        )
+        if decision is None:
             return None
+        if decision.flag:
+            return PdfOnlyPlan(
+                route="refuse",
+                missing=(decision.flag_field,),
+                description=description,
+                material=None if grade.blocks else material,
+                thickness_in=float(thickness_in) if thickness_in is not None else None,
+                notes=_with_grade(grade, _flag(decision.flag_field, decision.flag)),
+            )
+        if grade.blocks:
+            return _blocked_grade()
+        # Flat L×W is computed. NumberOfBends cannot be written, so this
+        # is not gold and no quote is created. Image Files would stamp
+        # decision.width_in × decision.developed_length_in.
         return PdfOnlyPlan(
             route="refuse",
-            missing=("formed part",),
+            missing=("bend count",),
             description=description,
             material=None if grade.blocks else material,
             thickness_in=float(thickness_in) if thickness_in is not None else None,
-            notes=_with_grade(grade, _flag("formed part", reason)),
+            width_in=decision.width_in,
+            length_in=decision.developed_length_in,
+            bend_count=decision.bend_count,
+            flats_from_chart=True,
+            line_note=decision.line_note,
+            notes=_with_grade(
+                grade,
+                decision.line_note,
+                BEND_COUNT_WRITE_GAP_NOTE,
+                _flag("bend count", BEND_COUNT_NOT_SET),
+            ),
         )
 
     if not plate and not linear:
-        formed = _formed_refuse()
+        formed = _apply_formed()
         if formed is not None:
             return formed
         return PdfOnlyPlan(route="unclassified")
@@ -346,7 +379,7 @@ def plan_pdf_only_part(
             notes=_with_grade(grade, note),
         )
 
-    formed = _formed_refuse()
+    formed = _apply_formed()
     if formed is not None:
         return formed
 
@@ -445,4 +478,20 @@ def plan_pdf_only_file(
         text = _read_pdf_text(path) or ""
     except Exception:  # noqa: BLE001 — corrupt test PDFs are not a stock callout
         text = ""
-    return plan_pdf_only_part(text=text, title=title, part_key=part_key)
+    drawings: list | None = None
+    if text:
+        try:
+            import fitz
+
+            doc = fitz.open(str(path))
+            try:
+                drawings = []
+                for page in doc:
+                    drawings.extend(page.get_drawings() or [])
+            finally:
+                doc.close()
+        except Exception:  # noqa: BLE001 — text-only when vectors cannot be read
+            drawings = None
+    return plan_pdf_only_part(
+        text=text, title=title, part_key=part_key, drawings=drawings
+    )

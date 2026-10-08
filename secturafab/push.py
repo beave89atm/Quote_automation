@@ -7644,6 +7644,18 @@ class SecturaFabPushService:
                                     and pdf_only_plan.route == "image_files"
                                     else None
                                 ),
+                                flat_width_in=(
+                                    pdf_only_plan.width_in
+                                    if pdf_only_plan is not None
+                                    and pdf_only_plan.flats_from_chart
+                                    else None
+                                ),
+                                flat_length_in=(
+                                    pdf_only_plan.length_in
+                                    if pdf_only_plan is not None
+                                    and pdf_only_plan.flats_from_chart
+                                    else None
+                                ),
                                 line_note=(
                                     pdf_only_plan.line_note
                                     if pdf_only_plan is not None and pdf_only_plan.line_note
