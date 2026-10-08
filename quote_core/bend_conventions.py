@@ -322,29 +322,6 @@ def _note_anchors(
     return anchors
 
 
-def _text_note_plane(text_blocks: list[dict[str, Any]] | None) -> bool:
-    """True when bend notes themselves are written on both axes."""
-    if not text_blocks:
-        return False
-    axes: set[str] = set()
-    for block in text_blocks:
-        if not isinstance(block, dict):
-            continue
-        if not _NOTE_AXIS_RE.search(str(block.get("text") or "")):
-            continue
-        direction = block.get("dir") or (1.0, 0.0)
-        try:
-            dx, dy = float(direction[0]), float(direction[1])
-        except (TypeError, ValueError, IndexError):
-            continue
-        angle = math.degrees(math.atan2(dy, dx)) % 180.0
-        if _undirected_delta(angle, 0.0) <= 20.0:
-            axes.add("horizontal")
-        elif _undirected_delta(angle, 90.0) <= 20.0:
-            axes.add("vertical")
-    return "horizontal" in axes and "vertical" in axes
-
-
 def _dash_option_flag(text: str) -> str | None:
     """``-1 BEND`` and ``-2 BEND`` are separate dash options, not one count."""
     dashes = {match.group(1) for match in _DASH_BEND_RE.finditer(text)}
@@ -465,17 +442,15 @@ def detect_bends(
 
     ``text_blocks`` is optional. Each item may carry ``text``, ``dir``
     ``(dx, dy)``, and ``bbox`` ``(x0, y0, x1, y1)`` from the PDF text layer.
-    A centerline counts only when a bend note sits on it. Note direction is
-    text evidence: horizontal and vertical bend notes are not one plane.
-    Geometry never creates a bend and never overrides the text count.
+    A centerline counts only when a bend note sits on it. The direction the
+    note is written is not a bend plane. Geometry never creates a bend and
+    never overrides the text count.
     """
     library = conventions if conventions is not None else load_conventions()
     blob = text if already_masked else mask_false_positives(text, library)
     anchors = _note_anchors(text_blocks)
     geom_count, perpendicular, geom_styles, geom_total = _geometry(drawings, anchors)
     plane = _plane_flag(blob, library, False)
-    if plane is None and _text_note_plane(text_blocks):
-        plane = "bends are not in a single plane"
     dash_flag = _dash_option_flag(blob)
     if dash_flag:
         return BendDetection(

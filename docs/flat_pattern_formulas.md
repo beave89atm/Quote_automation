@@ -2,7 +2,7 @@
 
 Kyle's sheet-metal guide, built into `secturafab/flat_formula.py`. The bend count still comes from `quote_core/bend_conventions.yaml`. This page is only the flat length.
 
-If the drawing prints a flat size on a FLAT PATTERN, FLAT, or DEVELOPED view, that size is the blank. The line note says `source drawing flat pattern`, and this formula does not run. The formula is the fallback when that size is not printed and the legs, thickness, and radius are all readable. Otherwise the quote flags.
+If the drawing prints a flat size on a FLAT PATTERN, FLAT, or DEVELOPED view, that size is the blank when it is clearly that view's overall size. A chamfer, thread, tolerance, or degree pair is not the blank. Separate horizontal and vertical overalls are used when their text positions make one pair obvious. The line note says `source drawing flat pattern`, and this formula does not run. The formula is the fallback when that view was not printed and the legs, thickness, and radius are all readable. If a flat view is printed and the size is not clear, the quote flags and this formula does not run.
 
 K is `materials.flat_pattern_k_factor` in `config/shop_rates.yaml`. The shop setting is **0.33**. Every formed line note says `K=0.33 assumed` (or the configured value, if that setting is changed).
 
@@ -47,7 +47,9 @@ Four identical 90° bends, outside chain total 12.000, same T, R, and K:
 - Inside dimensions, or a mix of inside / tangent / outside, when they cannot be converted confidently. BD is never applied to an unconverted chain
 - Angle convention not determined (a bare angle that is not 90°, or included and bend angles that disagree)
 - Bend with no stated angle
-- Missing or ambiguous inside radius
+- Missing or ambiguous inside radius. An ambiguous radius is flagged even when a flat size is also printed. A missing radius does not block a flat size that is already clear.
+- Printed flat size that is a chamfer, angle, thread, tolerance, or not a clear overall on the flat-pattern view
+- Tube or round-stock bend notes (`CLR`, centerline radius, or a bend table of angle, rotation, and length)
 - Offset or joggle when both bends and the connecting straight are not dimensioned
 
 An offset or joggle is calculated when both bends and the connecting straight are dimensioned. Any stated bend angle is allowed. A missing angle is not.

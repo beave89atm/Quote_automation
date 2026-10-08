@@ -1,14 +1,17 @@
 """PDF-only bend callouts and the flat blank.
 
-The bend count comes from ``quote_core/bend_conventions.yaml``. When the
-drawing prints a flat-pattern size, that size is the blank and the source
-is ``drawing flat pattern``. Otherwise the length comes from
-``secturafab/flat_formula.py`` when the legs, thickness, and radius are all
+The bend count comes from ``quote_core/bend_conventions.yaml``. A printed
+flat size is the blank only when it is the FLAT PATTERN view's overall
+size: not a chamfer, angle, thread, or tolerance, and plausible next to
+the thickness and the part's other dimensions. The source is ``drawing
+flat pattern``. Otherwise the length comes from ``secturafab/flat_formula.py``
+when no flat view was printed and the legs, thickness, and radius are all
 readable. K is the shop setting ``materials.flat_pattern_k_factor`` (0.33).
 """
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 
@@ -88,9 +91,6 @@ _ANGLE_RE = re.compile(
 _BEND_NOTE_LINE_RE = re.compile(
     r"(?i)(?<![A-Z0-9])(?:UP|DOWN)(?![A-Z0-9])|\bBENDS?\b"
 )
-_FORMED_EVIDENCE_RE = re.compile(
-    r"(?i)\bFLAT\s+PATTERN\b|\bDEVELOPED\s+(?:VIEW|BLANK|LENGTH)\b|\bFORMED\b"
-)
 _FLAT_LABEL_RE = re.compile(
     r"(?i)\b(?:FLAT\s+PATTERN(?:\s+VIEW)?|DEVELOPED(?:\s+(?:VIEW|BLANK|LENGTH))?|"
     r"FLAT\s+(?:SIZE|BLANK|LAYOUT))\b"
@@ -113,11 +113,12 @@ _WIDTH_RE = re.compile(
 _INCH_TOKEN = (
     r"(\d+\s*[- ]\s*\d+\s*/\s*\d+|\d+\s*/\s*\d+|\d+\.\d+|\.\d+|\d+)"
 )
+# Separators stay on the note line. A newline would pull the next dimension in.
 _RADIUS_RES = (
-    re.compile(rf"(?i)\bINSIDE\s+RADIUS\s+{_INCH_TOKEN}"),
-    re.compile(rf"(?i)\bBEND\s+RAD(?:IUS)?\s*[.:\s]+{_INCH_TOKEN}"),
-    re.compile(rf"(?i){_INCH_TOKEN}\s+BEND\s+RAD(?:IUS)?\b"),
-    re.compile(rf"(?i)\bIR\s*[:=]?\s*{_INCH_TOKEN}"),
+    re.compile(rf"(?i)\bINSIDE[ \t]+RADIUS[ \t]+{_INCH_TOKEN}"),
+    re.compile(rf"(?i)\bBEND[ \t]+RAD(?:IUS)?[ \t]*[.: \t]+{_INCH_TOKEN}"),
+    re.compile(rf"(?i){_INCH_TOKEN}[ \t]+BEND[ \t]+RAD(?:IUS)?\b"),
+    re.compile(rf"(?i)\bIR[ \t]*[:=]?[ \t]*{_INCH_TOKEN}"),
     re.compile(
         r"(?i)(?<![A-Z0-9])R[ \t]*(\.\d+|\d{1,2}[ \t]*/[ \t]*\d{1,2}|\d+(?:[.,]\d+)?)"
         r"[ \t]+TYP\b"
@@ -392,8 +393,9 @@ def read_bends(
     angles = tuple(float(match.group(1)) for match in _ANGLE_RE.finditer(blob))
     radii = [
         value
+        for line in blob.splitlines()
         for rx in _RADIUS_RES
-        for match in rx.finditer(blob)
+        for match in rx.finditer(line)
         if (value := _inches(match.group(1).replace(",", "."))) is not None
     ]
     radius, radius_ambiguous = _unique_inches(radii)
@@ -607,35 +609,392 @@ def _line_note(
     )
 
 
-def _drawing_flat_pair(text: str) -> tuple[float, float] | None:
-    """Overall blank printed on a FLAT PATTERN / FLAT / DEVELOPED view.
+# A printed blank has to be the flat-pattern view's overall size. A chamfer,
+# a thread, a tolerance, or an N X angle pair is never that size.
+FLAT_SIZE_UNCLEAR = "flat pattern size is not clear"
+ROUND_STOCK_BEND_FLAG = "tube or round-stock bend notes are formed evidence"
+_UNSAFE_SIZE_LINE_RE = re.compile(
+    r"(?i)\b(?:CHAMFERS?|COUNTERSINK|COUNTER\s*SINK|CSK|THREADS?|"
+    r"UNC|UNF|UNEF|NPT|NPS|TAP(?:PED)?|TOL(?:ERANCE)?S?|ANGULAR)\b|[±°º˚]"
+)
+_DEGREE_WORD_RE = re.compile(r"(?i)\bDEG(?:REE)?S?\b")
+_NOT_FLAT_SIZE_LINE_RE = re.compile(
+    r"(?i)\b(?:PLATE\s+SIZE|SHEET\s+SIZE|PAGE\s+SIZE|DRAWING\s+SIZE)\b"
+)
+_STOCK_FOLLOW_RE = re.compile(r"\s*[xX×]")
+_ANGLE_LIKE_IN = (15.0, 22.5, 30.0, 45.0, 60.0, 82.0, 90.0)
+_BARE_DIM_RE = re.compile(rf"(?i)^{_INCH_TOKEN}\s*(?:\"|″|IN(?:CH(?:ES)?)?)?$")
+_OTHER_DIM_RE = re.compile(rf"(?i)(?<![\d.]){_INCH_TOKEN}(?![\d./])")
+_ROUND_STOCK_BEND_RE = re.compile(
+    r"(?i)\b(?:CLR|C\.L\.R\.|CENTER\s*LINE\s+RADIUS|CENTERLINE\s+RADIUS)\b"
+)
+_NEAR_LABEL_PT = 480.0
+_CLUSTER_PT = 160.0
 
-    The pair is used in the order printed. None when the view is missing,
-    the pair is missing, or more than one pair is printed.
-    """
+
+def _degree_marked(text: str) -> bool:
+    return bool(_DEGREE_WORD_RE.search(text) or re.search(r"[°º˚]", text))
+
+
+def _size_line_rejected(line: str) -> bool:
+    return bool(_UNSAFE_SIZE_LINE_RE.search(line) or _degree_marked(line))
+
+
+def _angle_like(value: float) -> bool:
+    return any(abs(value - item) <= 0.02 for item in _ANGLE_LIKE_IN)
+
+
+def _bare_inches(text: str) -> float | None:
+    """One overall dimension, not a pair, hole, angle, or note."""
+    raw = " ".join(str(text or "").strip().split())
+    raw = raw.strip("()[]")
+    if not raw or _size_line_rejected(raw) or _NOT_FLAT_SIZE_LINE_RE.search(raw):
+        return None
+    if re.search(r"[xX×Ø⌀]", raw):
+        return None
+    if re.search(r"(?i)\b(?:DIA|DIAM|THRU|HOLE|TYP|REF|GAUGE|THK|THICK|WALL)\b", raw):
+        return None
+    match = _BARE_DIM_RE.fullmatch(raw)
+    if not match:
+        return None
+    return _inches(match.group(1))
+
+
+def _accepted_size(width: float, length: float, text: str, thickness: float | None) -> bool:
+    """True when the pair can be the blank, not a sheet, angle, or scrap."""
     from .item_desc import looks_like_drawing_sheet, looks_like_page_outline
 
+    if width <= 0.25 or length <= 0.25 or max(width, length) > 240:
+        return False
+    small, big = (width, length) if width <= length else (length, width)
+    if small <= 1.5 and _angle_like(big):
+        return False
+    if thickness is not None and (width <= thickness or length <= thickness):
+        return False
+    if looks_like_drawing_sheet(width, length) or looks_like_page_outline(width, length):
+        return False
+    return not _implausible_vs_part(width, length, text)
+
+
+def _implausible_vs_part(width: float, length: float, text: str) -> bool:
+    """A short side next to a much larger real overall is not the blank."""
+    small = min(width, length)
+    others: list[float] = []
+    for line in str(text or "").splitlines():
+        if _size_line_rejected(line):
+            continue
+        for match in _OTHER_DIM_RE.finditer(line):
+            value = _inches(match.group(1))
+            if value is None or value < 2.0:
+                continue
+            if abs(value - width) <= 0.03 or abs(value - length) <= 0.03:
+                continue
+            others.append(value)
+    if not others:
+        return False
+    return small < 1.0 and max(others) >= 8.0
+
+
+def _pair_rejected(
+    line: str,
+    match: re.Match[str],
+    width: float,
+    length: float,
+    thickness: float | None,
+) -> bool:
+    if _NOT_FLAT_SIZE_LINE_RE.search(line) or _size_line_rejected(line):
+        return True
+    if _STOCK_FOLLOW_RE.match(line[match.end() :]):
+        return True
+    small, big = (width, length) if width <= length else (length, width)
+    if small <= 1.5 and _angle_like(big):
+        return True
+    if thickness is not None and (width <= thickness or length <= thickness):
+        return True
+    if width <= 0.25 or length <= 0.25 or max(width, length) > 240:
+        return True
+    return False
+
+
+def _neighborhood(lines: list[str], index: int, limit: int = 4) -> list[str]:
+    """Label line plus a few nearby lines. A double blank ends the view."""
+    picked = [lines[index]]
+
+    def walk(step: int) -> None:
+        blanks = 0
+        content = 0
+        cursor = index + step
+        while 0 <= cursor < len(lines) and content < limit:
+            line = lines[cursor]
+            if not line.strip():
+                blanks += 1
+                if blanks >= 2:
+                    break
+            else:
+                blanks = 0
+                picked.append(line)
+                content += 1
+            cursor += step
+
+    walk(-1)
+    walk(1)
+    return picked
+
+
+def _line_marks_flat_view(line: str) -> bool:
+    """A dimension or bend note next to the label. Plate stock does not."""
+    if _NOT_FLAT_SIZE_LINE_RE.search(line):
+        return False
+    if _FLAT_LABEL_RE.search(line) and not _FLAT_PAIR_RE.search(line):
+        if not _BEND_NOTE_LINE_RE.search(line):
+            return False
+    if _BEND_NOTE_LINE_RE.search(line):
+        return True
+    if _FLAT_PAIR_RE.search(line):
+        return True
+    value = _bare_inches(line)
+    return value is not None and value >= 1.0
+
+
+def _as_blocks(text_blocks: list | None) -> list[dict]:
+    if not text_blocks:
+        return []
+    return [block for block in text_blocks if isinstance(block, dict)]
+
+
+def _bbox(block: dict) -> tuple[float, float, float, float] | None:
+    raw = block.get("bbox")
+    if not isinstance(raw, (list, tuple)) or len(raw) < 4:
+        return None
+    try:
+        box = (float(raw[0]), float(raw[1]), float(raw[2]), float(raw[3]))
+    except (TypeError, ValueError):
+        return None
+    if box[2] < box[0] or box[3] < box[1]:
+        return None
+    return box
+
+
+def _same_page(left: dict, right: dict) -> bool:
+    left_page, right_page = left.get("page"), right.get("page")
+    if left_page is None or right_page is None:
+        return True
+    return left_page == right_page
+
+
+def _box_gap(
+    left: tuple[float, float, float, float],
+    right: tuple[float, float, float, float],
+) -> float:
+    dx = max(left[0] - right[2], right[0] - left[2], 0.0)
+    dy = max(left[1] - right[3], right[1] - left[3], 0.0)
+    return math.hypot(dx, dy)
+
+
+def _text_axis(block: dict) -> str | None:
+    direction = block.get("dir") or ()
+    try:
+        dx, dy = float(direction[0]), float(direction[1])
+    except (TypeError, ValueError, IndexError):
+        return None
+    if dx == 0.0 and dy == 0.0:
+        return None
+    angle = math.degrees(math.atan2(dy, dx)) % 180.0
+    if min(angle, 180.0 - angle) <= 20.0:
+        return "h"
+    if abs(angle - 90.0) <= 20.0:
+        return "v"
+    return None
+
+
+def _flat_view_is_real(text: str, text_blocks: list | None) -> bool:
+    """A FLAT PATTERN label with a dimension or bend note next to it.
+
+    A bare template label, with nothing around it, is not a flat view.
+    """
+    lines = str(text or "").splitlines()
+    for index, line in enumerate(lines):
+        if not _FLAT_LABEL_RE.search(line):
+            continue
+        if any(_line_marks_flat_view(item) for item in _neighborhood(lines, index)):
+            return True
+    blocks = _as_blocks(text_blocks)
+    labels = [
+        block
+        for block in blocks
+        if _bbox(block) and _FLAT_LABEL_RE.search(str(block.get("text") or ""))
+    ]
+    for label in labels:
+        label_box = _bbox(label)
+        if label_box is None:
+            continue
+        for block in blocks:
+            if block is label or not _same_page(label, block):
+                continue
+            box = _bbox(block)
+            if box is None or _box_gap(label_box, box) > _NEAR_LABEL_PT:
+                continue
+            if _line_marks_flat_view(str(block.get("text") or "")):
+                return True
+    return False
+
+
+def _unique_pairs(pairs: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    found: list[tuple[float, float]] = []
+    for pair in pairs:
+        if any(abs(pair[0] - old[0]) <= 0.02 and abs(pair[1] - old[1]) <= 0.02 for old in found):
+            continue
+        found.append(pair)
+    return found
+
+
+def _pairs_compatible(left: tuple[float, float], right: tuple[float, float]) -> bool:
+    swapped = (right[1], right[0])
+    return any(
+        abs(left[0] - other[0]) <= 0.02 and abs(left[1] - other[1]) <= 0.02
+        for other in (right, swapped)
+    )
+
+
+def _inline_pairs(text: str, thickness: float | None) -> list[tuple[float, float]]:
     lines = str(text or "").splitlines()
     found: list[tuple[float, float]] = []
     for index, line in enumerate(lines):
         if not _FLAT_LABEL_RE.search(line):
             continue
-        window = "\n".join(lines[max(0, index - 4) : index + 8])
-        for match in _FLAT_PAIR_RE.finditer(window):
-            width = _inches(match.group(1))
-            length = _inches(match.group(2))
-            if width is None or length is None:
+        for item in _neighborhood(lines, index):
+            for match in _FLAT_PAIR_RE.finditer(item):
+                width = _inches(match.group(1))
+                length = _inches(match.group(2))
+                if width is None or length is None:
+                    continue
+                if _pair_rejected(item, match, width, length, thickness):
+                    continue
+                if not _accepted_size(width, length, text, thickness):
+                    continue
+                found.append((width, length))
+    return _unique_pairs(found)
+
+
+def _axis_overall(samples: list[tuple[float, float]]) -> tuple[float | None, bool]:
+    """Largest dimension nearest the label. Conflict when two overalls compete."""
+    if not samples:
+        return None, False
+    ordered = sorted(samples, key=lambda item: item[1])
+    nearest = ordered[0][1]
+    cluster = [value for value, dist in ordered if dist <= nearest + _CLUSTER_PT]
+    outside = [value for value, dist in ordered if dist > nearest + _CLUSTER_PT]
+    top = max(cluster)
+    rivals = [value for value in cluster if abs(value - top) > 0.02]
+    if rivals and top < max(rivals) * 1.5:
+        return None, True
+    if any(value > top + 0.5 for value in outside):
+        return None, True
+    return top, False
+
+
+def _position_pair(
+    text: str,
+    text_blocks: list | None,
+    thickness: float | None,
+) -> tuple[tuple[float, float] | None, bool]:
+    """Horizontal and vertical overalls nearest one flat-pattern label.
+
+    The bool is True when those overalls conflict or are not a safe blank.
+    """
+    blocks = _as_blocks(text_blocks)
+    labels: list[tuple[dict, tuple[float, float, float, float]]] = []
+    dims: list[tuple[dict, tuple[float, float, float, float], float, str]] = []
+    for block in blocks:
+        box = _bbox(block)
+        if box is None:
+            continue
+        raw = str(block.get("text") or "")
+        if _FLAT_LABEL_RE.search(raw):
+            labels.append((block, box))
+            continue
+        value = _bare_inches(raw)
+        if value is None or value < 1.0 or value > 240:
+            continue
+        axis = _text_axis(block)
+        if axis is None:
+            continue
+        dims.append((block, box, value, axis))
+    if not labels or not dims:
+        return None, False
+    pairs: list[tuple[float, float]] = []
+    conflict = False
+    for label, label_box in labels:
+        grouped: dict[str, list[tuple[float, float]]] = {"h": [], "v": []}
+        for block, box, value, axis in dims:
+            if not _same_page(label, block):
                 continue
-            if width <= 0.25 or length <= 0.25 or max(width, length) > 240:
+            gap = _box_gap(label_box, box)
+            if gap > _NEAR_LABEL_PT:
                 continue
-            if looks_like_drawing_sheet(width, length) or looks_like_page_outline(width, length):
-                continue
-            pair = (width, length)
-            if not any(abs(pair[0] - old[0]) <= 0.0005 and abs(pair[1] - old[1]) <= 0.0005 for old in found):
-                found.append(pair)
-    if len(found) != 1:
-        return None
-    return found[0]
+            grouped[axis].append((value, gap))
+        horizontal, horizontal_bad = _axis_overall(grouped["h"])
+        vertical, vertical_bad = _axis_overall(grouped["v"])
+        if horizontal_bad or vertical_bad:
+            conflict = True
+            continue
+        if horizontal is None or vertical is None:
+            continue
+        if not _accepted_size(horizontal, vertical, text, thickness):
+            conflict = True
+            continue
+        pairs.append((horizontal, vertical))
+    unique = _unique_pairs(pairs)
+    if len(unique) == 1 and not conflict:
+        return unique[0], False
+    if len(unique) > 1 or conflict:
+        return None, True
+    return None, False
+
+
+def _drawing_flat_decision(
+    text: str,
+    thickness_in: float | None,
+    text_blocks: list | None,
+) -> tuple[tuple[float, float] | None, str | None]:
+    """Trusted blank, or a flag when a real flat view has no safe size.
+
+    An inline ``W x L`` is used in the order printed. Separate overalls are
+    paired only from text-block positions: horizontal extent, then vertical.
+    A bare template label is ignored. Anything unsure is a flag.
+    """
+    if not _FLAT_LABEL_RE.search(text or ""):
+        return None, None
+    if not _flat_view_is_real(text, text_blocks):
+        return None, None
+    inline = _inline_pairs(text, thickness_in)
+    position, conflict = _position_pair(text, text_blocks, thickness_in)
+    if conflict or len(inline) > 1:
+        return None, FLAT_SIZE_UNCLEAR
+    if len(inline) == 1 and position is not None and not _pairs_compatible(inline[0], position):
+        return None, FLAT_SIZE_UNCLEAR
+    if len(inline) == 1:
+        return inline[0], None
+    if position is not None:
+        return position, None
+    return None, FLAT_SIZE_UNCLEAR
+
+
+def round_stock_bend_evidence(text: str) -> bool:
+    """CLR, centerline radius, or a tube bend table (angle, rotation, length)."""
+    blob = str(text or "")
+    if _ROUND_STOCK_BEND_RE.search(blob):
+        return True
+    lines = blob.splitlines()
+    for index in range(len(lines)):
+        window = " ".join(lines[index : index + 3])
+        if (
+            re.search(r"(?i)\bANGLE\b", window)
+            and re.search(r"(?i)\bROTATION\b", window)
+            and re.search(r"(?i)\bLENGTH\b", window)
+        ):
+            return True
+    return False
 
 
 def _drawing_flat_note(read: BendRead, width: float, length: float) -> str:
@@ -654,15 +1013,27 @@ def _positive_length(value: float) -> float | None:
     return value
 
 
-def _has_formed_evidence(read: BendRead, text: str) -> bool:
-    """True when the text says the part is formed, even if the count is missing."""
+def _has_formed_evidence(
+    read: BendRead,
+    text: str,
+    text_blocks: list | None = None,
+) -> bool:
+    """True when the text says the part is formed, even if the count is missing.
+
+    A bare FLAT PATTERN template label, with no dimension or bend note next
+    to it, does not count.
+    """
     if read.callout or read.formed_word or read.bend_word or read.up_down:
         return True
     if read.count_flag or read.plane_flag:
         return True
     if read.bend_count not in (None, 0):
         return True
-    return bool(_FORMED_EVIDENCE_RE.search(text or ""))
+    if round_stock_bend_evidence(text):
+        return True
+    if _flat_view_is_real(text, text_blocks):
+        return True
+    return bool(re.search(r"(?i)\bFORMED\b", text or ""))
 
 
 def evaluate_formed(
@@ -674,17 +1045,23 @@ def evaluate_formed(
 ) -> FlatPattern | None:
     """None when the drawing is a flat plate. Otherwise a flag or a developed flat.
 
-    A printed FLAT PATTERN size is the blank. Kyle's formula runs only when
-    that size is not printed and the legs, thickness, and radius are all
-    readable. Hems, rolled sections, cones, compound forms, nonparallel
-    bends, a missing radius, an unclear angle, and an inside or mixed
-    dimension chain are flagged before the formula runs. A stated bend
-    angle of any size is allowed. θ is the change from flat.
+    A printed FLAT PATTERN size is the blank only when it is a clear overall
+    on that view: not a chamfer, angle, thread, or tolerance, and plausible
+    next to the thickness and the part's other dimensions. An unclear angle
+    or an ambiguous radius is flagged before that size is accepted. A missing
+    angle or radius does not block a size that already passed. Kyle's formula
+    runs only when no flat view was printed and the legs, thickness, and
+    radius are all readable. Hems, rolled sections, cones, compound forms,
+    nonparallel bends, and an inside or mixed dimension chain are flagged
+    before the formula runs. A stated bend angle of any size is allowed.
+    θ is the change from flat.
 
     Formed evidence with a bend count of 0 or unknown is a flag. It is not
-    a flat plate.
+    a flat plate. A bare template label is not formed evidence.
     """
     read = read_bends(text, drawings, text_blocks=text_blocks)
+    if round_stock_bend_evidence(text):
+        return FlatPattern(flag=ROUND_STOCK_BEND_FLAG)
     if read.hem:
         return FlatPattern(flag="hem is not a simple bend")
     if read.roll:
@@ -701,25 +1078,33 @@ def evaluate_formed(
         return FlatPattern(flag="offset/jog is not dimensioned")
     if read.count_flag:
         return FlatPattern(flag=read.count_flag, flag_field="bend count")
-    if read.bend_count in (None, 0) and _has_formed_evidence(read, text):
+    if read.bend_count in (None, 0) and _has_formed_evidence(read, text, text_blocks):
         return FlatPattern(
             flag="formed evidence but the bend count is 0 or unknown",
         )
     if not read.callout:
         return None
-    printed = _drawing_flat_pair(text) if read.bend_count and read.bend_count > 0 else None
-    if printed is not None:
-        if thickness_in is None:
-            return FlatPattern(flag="thickness was not on the drawing")
-        width, length = printed
-        return FlatPattern(
-            developed_length_in=length,
-            width_in=width,
-            bend_count=int(read.bend_count or 0),
-            line_note=_drawing_flat_note(read, width, length),
-            operations=("Profile", "Bend"),
-            length_source="drawing flat pattern",
-        )
+    # An unclear angle or radius has to win before any printed size.
+    if read.angle_flag and read.angle_flag != "bend angle was not on the drawing":
+        return FlatPattern(flag=read.angle_flag)
+    if read.radius_flag and read.radius_flag != "inside radius was not on the drawing":
+        return FlatPattern(flag=read.radius_flag)
+    if read.bend_count and read.bend_count > 0:
+        printed, size_flag = _drawing_flat_decision(text, thickness_in, text_blocks)
+        if size_flag:
+            return FlatPattern(flag=size_flag)
+        if printed is not None:
+            if thickness_in is None:
+                return FlatPattern(flag="thickness was not on the drawing")
+            width, length = printed
+            return FlatPattern(
+                developed_length_in=length,
+                width_in=width,
+                bend_count=int(read.bend_count or 0),
+                line_note=_drawing_flat_note(read, width, length),
+                operations=("Profile", "Bend"),
+                length_source="drawing flat pattern",
+            )
     if read.angle_flag:
         return FlatPattern(flag=read.angle_flag)
     if read.radius_flag:

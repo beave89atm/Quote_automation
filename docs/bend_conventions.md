@@ -10,10 +10,14 @@ These are the rules the reader uses now.
 - A hole centerline or a symmetry centerline is not a bend. Geometry can only agree with a bend the text already named. It cannot add a bend, cancel one, or by itself say the part is not flat.
 - `1/4 BEND RADIUS` is a radius, not 4 bends. `-1 BEND` and `-2 BEND` are dash labels. When both are on the sheet they are separate options, not one combined count. `(BEND LINE)` on a dimension is not a bend. `BEND ANGLE = 90°` and `ANGULAR: BEND 1°` are title-block notes. `MASTER CYLINDER` is a part name, not a rolled cylinder.
 - A scanned page, or a page whose text comes out as one character per line, is `FLAG: drawing text — unreadable, needs human review`. It does not go through as a flat plate.
-- If the drawing prints a flat size on a FLAT PATTERN, FLAT, or DEVELOPED view, that size is the blank. The line note says `source drawing flat pattern`. Kyle's formula (K = 0.33 from shop config) runs only when that size is not printed and the legs, thickness, and radius are all readable. Otherwise the quote flags.
-- If the text shows a formed part (a FLAT PATTERN view, a bend note, the word FORMED, or a formed view) and the bend count is 0 or unknown, the quote flags. It is never pushed as a flat plate.
+- A radius is read from the same line as the bend note. A dimension on the next line is not the radius.
+- A bend note written vertically is still one plane. Rotated text is not a second bend direction. `HORIZONTAL BEND` and `VERTICAL BEND` still mean two planes. Perpendicular bend lines still mean two planes when they match the bend count.
+- If the drawing prints a flat size on a FLAT PATTERN, FLAT, or DEVELOPED view, that size is the blank only when it is clearly that view's overall size. A chamfer, a thread, a tolerance, or a pair like `3/8 X 45°` is never the blank. The size also has to make sense next to the thickness and the part's other dimensions. Separate horizontal and vertical overalls can be paired from their text positions. If the size is not clear, the quote flags and does not push. The line note says `source drawing flat pattern` when the size is used. Kyle's formula (K = 0.33 from shop config) runs only when that view was not printed and the legs, thickness, and radius are all readable.
+- An unclear angle or an ambiguous radius is checked before a printed size is accepted. A missing angle or radius does not throw away a size that already passed those checks.
+- If the text shows a formed part (a FLAT PATTERN view that has a size or a bend note next to it, a bend note, the word FORMED, or a formed view) and the bend count is 0 or unknown, the quote flags. It is never pushed as a flat plate. A blank title-block line that only says `FLAT PATTERN VIEW`, with nothing next to it, is template wording. It does not make a flat plate into a formed part.
+- `CLR`, `centerline radius`, or a tube bend table (angle, rotation, and length) means the tube or bar is formed. The quote flags. It is not a straight cut.
 
-`detect_bends(text, drawings)` is unchanged. An optional `text_blocks` argument can carry each PDF line's `text`, `dir`, and `bbox`. Bend notes written both horizontally and vertically are not one plane. A centerline counts only when one of those notes sits on it.
+`detect_bends(text, drawings)` is unchanged. An optional `text_blocks` argument can carry each PDF line's `text`, `dir`, and `bbox`. The direction the note is written does not change the bend plane. A centerline counts only when one of those notes sits on it.
 
 The flat length is not a bend count. A printed flat size wins. The formula in `secturafab/flat_formula.py` is the fallback. See `docs/flat_pattern_formulas.md`. K is `materials.flat_pattern_k_factor` in `config/shop_rates.yaml` (0.33).
 
@@ -74,7 +78,7 @@ Geometry does not set the count. If the long center or phantom lines are paralle
 
 ## Flat pattern after the count
 
-If the drawing prints the blank on a FLAT PATTERN, FLAT, or DEVELOPED view, that pair is the flat size. The line note says `source drawing flat pattern`. The pair is used in the order printed.
+If the drawing prints the blank on a FLAT PATTERN, FLAT, or DEVELOPED view, that pair is the flat size when it is the view's overall size. The line note says `source drawing flat pattern`. An inline pair is used in the order printed. Separate overall dimensions are paired from their positions: the horizontal extent, then the vertical extent. A chamfer, thread, tolerance, or `N X` angle is not the blank. If that size is not clear, the quote flags.
 
 Kyle's formula is the fallback, and only when the legs, the thickness, and the radius are all readable. K is 0.33 from shop config unless that setting changes. For N bends in one plane, with N+1 dimensioned legs:
 

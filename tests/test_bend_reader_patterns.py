@@ -120,14 +120,16 @@ def test_hole_centerlines_do_not_create_or_contradict_a_bend():
     assert any("geom_center_line" in bend.corroboration for bend in agreed.bends)
 
 
-def test_bend_note_direction_flags_two_planes():
+def test_rotated_bend_note_is_not_a_second_plane():
+    # A note written vertically is still the same bend plane.
     blocks = [
-        {"text": "UP 90° R.13", "dir": (1, 0), "bbox": (70, 60, 160, 74)},
-        {"text": "DOWN 90° R.13", "dir": (0, -1), "bbox": (200, 40, 214, 140)},
+        {"text": "UP 90° R.25", "dir": (1, 0), "bbox": (70, 60, 180, 74)},
+        {"text": "UP 15° R.25", "dir": (0, -1), "bbox": (200, 40, 214, 160)},
     ]
-    found = detect_bends("UP 90° R.13\nDOWN 90° R.13", text_blocks=blocks)
+    found = detect_bends("UP 90° R.25\nUP 15° R.25", text_blocks=blocks)
     assert found.count == 2
-    assert found.plane_flag == "bends are not in a single plane"
+    assert found.flag is None
+    assert found.plane_flag is None
 
 
 def test_fraction_dash_and_boilerplate_are_not_bend_counts():
@@ -380,4 +382,254 @@ def test_pdf_note_rotation_reaches_the_plan(tmp_path: Path):
     doc.close()
     plan = plan_pdf_only_file(crossed, title="SAMPLE BRACKET")
     assert plan.route == "refuse"
-    assert "bends are not in a single plane" in " ".join(plan.notes)
+    notes = " ".join(plan.notes)
+    assert "bends are not in a single plane" not in notes
+    assert "dimension basis was not stated" in notes
+
+
+def _formed_plate(*lines: str) -> str:
+    return "\n".join(
+        [
+            "SAMPLE BRACKET",
+            "PLATE",
+            "0.125",
+            "A36",
+            *lines,
+        ]
+    )
+
+
+def test_chamfer_pair_is_not_the_flat_blank():
+    text = _formed_plate(
+        "UP 90° R.13",
+        "DOWN 90° R.13",
+        "FLAT PATTERN",
+        "3/8 X 45° CHAMFER",
+        "5/16 X 45 CHAMFER",
+    )
+    decision = evaluate_formed(text, thickness_in=0.125)
+    assert decision is not None
+    assert decision.developed_length_in is None
+    assert decision.length_source != "drawing flat pattern"
+    assert decision.flag == "flat pattern size is not clear"
+    assert decision.width_in != pytest.approx(0.375)
+    assert decision.developed_length_in != pytest.approx(45)
+
+    plan = plan_pdf_only_part(text=text, title="SAMPLE BRACKET")
+    assert plan.route == "refuse"
+    assert plan.route != "image_files"
+    assert plan.flat_source != "drawing flat pattern"
+    assert plan.width_in is None
+    assert plan.length_in is None
+    notes = " ".join(plan.notes)
+    assert "flat pattern size is not clear" in notes
+    assert "0.375" not in notes
+    assert "0.3125" not in notes
+
+
+def test_real_flat_pair_wins_beside_a_chamfer(monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("formula ran even though the drawing printed the flat")
+
+    monkeypatch.setattr("secturafab.flat_pattern.flat_length_in", _boom)
+    text = _formed_plate(
+        "UP 90° R.13",
+        "DOWN 90° R.13",
+        "FLAT PATTERN",
+        "3/8 X 45° CHAMFER",
+        "18.25 X 6.50",
+    )
+    decision = evaluate_formed(text, thickness_in=0.125)
+    assert decision is not None
+    assert decision.flag is None
+    assert decision.length_source == "drawing flat pattern"
+    assert decision.width_in == pytest.approx(18.25)
+    assert decision.developed_length_in == pytest.approx(6.50)
+    assert decision.width_in != pytest.approx(0.375)
+
+
+def test_ambiguous_radius_blocks_a_printed_size():
+    text = _formed_plate(
+        "UP 90° R.13",
+        "UP 90° R.13",
+        "INSIDE RADIUS 0.50",
+        "FLAT PATTERN",
+        "3/8 X 45° CHAMFER",
+        "18.25 X 6.50",
+    )
+    decision = evaluate_formed(text, thickness_in=0.125)
+    assert decision is not None
+    assert decision.flag == "inside radius is ambiguous"
+    assert decision.developed_length_in is None
+    assert decision.length_source != "drawing flat pattern"
+
+
+def test_missing_radius_does_not_block_a_clear_flat_size(monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("formula ran even though the drawing printed the flat")
+
+    monkeypatch.setattr("secturafab.flat_pattern.flat_length_in", _boom)
+    text = _formed_plate(
+        "UP 90°",
+        "UP 90°",
+        "FLAT PATTERN",
+        "18.25 X 6.50",
+    )
+    decision = evaluate_formed(text, thickness_in=0.125)
+    assert decision is not None
+    assert decision.flag is None
+    assert decision.length_source == "drawing flat pattern"
+    assert decision.width_in == pytest.approx(18.25)
+    assert decision.developed_length_in == pytest.approx(6.50)
+    assert decision.bend_count == 2
+
+
+def test_separate_flat_overalls_pair_from_text_positions(monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("formula ran even though the flat overalls were paired")
+
+    monkeypatch.setattr("secturafab.flat_pattern.flat_length_in", _boom)
+    text = _formed_plate(
+        "UP 90° R.13",
+        "UP 90° R.13",
+        "FLAT PATTERN",
+        "16.75",
+        "4.125",
+        "1.50",
+    )
+    blocks = [
+        {"text": "FLAT PATTERN", "dir": (1, 0), "bbox": (100, 70, 220, 86)},
+        {"text": "16.75", "dir": (1, 0), "bbox": (110, 240, 180, 254)},
+        {"text": "4.125", "dir": (0, -1), "bbox": (40, 100, 54, 180)},
+        {"text": "1.50", "dir": (1, 0), "bbox": (140, 150, 180, 164)},
+    ]
+    decision = evaluate_formed(text, thickness_in=0.125, text_blocks=blocks)
+    assert decision is not None
+    assert decision.flag is None
+    assert decision.length_source == "drawing flat pattern"
+    assert decision.width_in == pytest.approx(16.75)
+    assert decision.developed_length_in == pytest.approx(4.125)
+
+    plan = plan_pdf_only_part(text=text, title="SAMPLE BRACKET", text_blocks=blocks)
+    assert plan.route == "image_files"
+    assert plan.flat_source == "drawing flat pattern"
+    assert plan.width_in == pytest.approx(16.75)
+    assert plan.length_in == pytest.approx(4.125)
+
+
+def test_separate_flat_overalls_without_positions_flag():
+    text = _formed_plate(
+        "UP 90° R.13",
+        "UP 90° R.13",
+        "FLAT PATTERN",
+        "16.75",
+        "4.125",
+    )
+    decision = evaluate_formed(text, thickness_in=0.125)
+    assert decision is not None
+    assert decision.developed_length_in is None
+    assert decision.flag == "flat pattern size is not clear"
+    assert "dimension basis" not in (decision.flag or "")
+
+    plan = plan_pdf_only_part(text=text, title="SAMPLE BRACKET")
+    assert plan.route == "refuse"
+    assert plan.width_in is None
+    notes = " ".join(plan.notes)
+    assert "flat pattern size is not clear" in notes
+    assert "dimension basis was not stated" not in notes
+
+
+def test_radius_stays_on_the_bend_note_line():
+    text = "\n".join(
+        [
+            "UP 90° R.13",
+            "4.50",
+            "BEND RADIUS",
+            "0.75",
+        ]
+    )
+    found = read_bends(text)
+    assert found.bend_count == 1
+    assert found.radius_ambiguous is False
+    assert found.radius_flag is None
+    assert found.radii_in == pytest.approx((0.13,))
+    assert 4.50 not in found.radii_in
+    assert 0.75 not in found.radii_in
+
+    following = read_bends("BEND UP 90 DEG\nBEND RADIUS\n4.50")
+    assert following.radii_in != pytest.approx((4.50,))
+    assert following.radius_flag == "inside radius was not on the drawing"
+    assert following.radius_ambiguous is False
+
+
+def test_bare_flat_pattern_label_is_not_formed_evidence():
+    text = "\n".join([_PLATE, "FLAT PATTERN VIEW"])
+    decision = evaluate_formed(text, thickness_in=0.25)
+    assert decision is None
+
+    blocks = [
+        {"text": "PLATE SIZE 4.00 X 6.00", "dir": (1, 0), "bbox": (72, 700, 240, 714), "page": 0},
+        {"text": "FLAT PATTERN VIEW", "dir": (1, 0), "bbox": (72, 72, 210, 86), "page": 1},
+    ]
+    paged = evaluate_formed(text, thickness_in=0.25, text_blocks=blocks)
+    assert paged is None
+
+    plan = plan_pdf_only_part(text=text, title="SAMPLE PLATE", text_blocks=blocks)
+    assert plan.route == "image_files"
+    assert plan.bend_count == 0
+    assert "formed evidence" not in " ".join(plan.notes)
+
+
+def test_round_stock_bend_notes_flag_before_a_straight_cut():
+    bent = "\n".join(
+        [
+            "BENT TUBE",
+            "2.00 X 2.00 X 0.250 TUBE",
+            "A36",
+            "48 LG.",
+            "CLR 3.00",
+        ]
+    )
+    plan = plan_pdf_only_part(text=bent, title="BENT TUBE")
+    assert plan.route == "refuse"
+    assert plan.route != "long"
+    assert "tube or round-stock bend notes are formed evidence" in " ".join(plan.notes)
+    assert plan.cut_length_in is None
+
+    bare = "\n".join(
+        [
+            "ROUND BAR",
+            "CENTERLINE RADIUS 2.00",
+        ]
+    )
+    missing = plan_pdf_only_part(text=bare, title="ROUND BAR")
+    assert missing.route == "refuse"
+    assert "tube or round-stock bend notes are formed evidence" in " ".join(missing.notes)
+    assert "thickness was not on the drawing" not in " ".join(missing.notes)
+
+    table = "\n".join(
+        [
+            "ROUND TUBE",
+            "A36",
+            "30 LG.",
+            "ANGLE ROTATION LENGTH",
+            "90 0 8.00",
+            "45 180 6.00",
+        ]
+    )
+    listed = plan_pdf_only_part(text=table, title="ROUND TUBE")
+    assert listed.route == "refuse"
+    assert listed.route != "long"
+    assert "tube or round-stock bend notes are formed evidence" in " ".join(listed.notes)
+
+    straight = "\n".join(
+        [
+            "PEDESTAL TUBE",
+            "2 X 2 X 0.250 TUBE",
+            "A36",
+            "48 LG.",
+        ]
+    )
+    untouched = plan_pdf_only_part(text=straight, title="PEDESTAL TUBE")
+    assert untouched.route == "long"
+    assert "formed evidence" not in " ".join(untouched.notes)

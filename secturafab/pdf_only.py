@@ -27,7 +27,7 @@ from quote_core.drawing_title import extract_title_from_pdf_text
 from quote_core.part_materials import _sectura_material_string, parse_material_block
 
 from .bend_op import BEND_COUNT_WRITE_GAP_NOTE
-from .flat_pattern import evaluate_formed
+from .flat_pattern import ROUND_STOCK_BEND_FLAG, evaluate_formed, round_stock_bend_evidence
 from .item_desc import parse_plate_flats
 from .line_item_ops import parse_cut_length
 from .push import (
@@ -353,6 +353,18 @@ def plan_pdf_only_part(
         return PdfOnlyPlan(route="unclassified")
 
     if category == "Linear" or (linear and not plate):
+        if round_stock_bend_evidence(f"{text}\n{title}"):
+            return PdfOnlyPlan(
+                route="refuse",
+                missing=("formed part",),
+                description=description,
+                material=None if grade.blocks else material,
+                thickness_in=float(thickness_in) if thickness_in is not None else None,
+                notes=_with_grade(
+                    grade,
+                    _flag("formed part", ROUND_STOCK_BEND_FLAG),
+                ),
+            )
         cut = parse_cut_length(text) or parse_cut_length(title)
         if cut is None:
             note = _flag(
@@ -517,6 +529,7 @@ def _pdf_text_and_vectors(path: Path) -> tuple[str, list | None, list | None]:
                             "text": text,
                             "dir": tuple(line.get("dir") or (1, 0)),
                             "bbox": tuple(line.get("bbox") or ()),
+                            "page": page.number,
                         }
                     )
         return "\n".join(texts), drawings, blocks
