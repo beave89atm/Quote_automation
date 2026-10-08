@@ -9,12 +9,12 @@ config grade (A36 unless changed) and still pushes. Any other family, or a
 drawing that does not name a family, is flagged and not given a grade.
 
 A flat plate with no bend callouts has bend count 0 and no Bend op.
-UP/DOWN, BEND, FORMED, a brake note, a hem, a jog, or multiple formed
-views still raise ``FLAG: formed part`` when the flat-pattern calculator
-cannot price them. They do not set the line's bend count. That count is
-the Bend operation's ``NumberOfBends``. Nothing captured in this repo
-writes that field, so a formed part that would otherwise be quoted stops
-before a quote is created with ``FLAG: bend count``.
+A bend callout (UP/DOWN, a bend angle, a bend radius, FORMED, BEND, a
+brake note, multiple views of a formed shape, a hem, or an offset/jog)
+is ``FLAG: formed part`` and does not go through as a flat laser plate.
+Callouts do not set the line's bend count. That count is the Bend
+operation's ``NumberOfBends``. A formed drawing that does not state a
+flat L×W stops before a quote is created. Nothing is invented for the flat.
 """
 
 from __future__ import annotations
@@ -27,8 +27,7 @@ from quote_core.config import load_shop_rates
 from quote_core.drawing_title import extract_title_from_pdf_text
 from quote_core.part_materials import _sectura_material_string, parse_material_block
 
-from .bend_op import BEND_COUNT_NOT_SET, BEND_COUNT_WRITE_GAP_NOTE
-from .flat_pattern import evaluate_formed
+from .flat_pattern import formed_flag
 from .item_desc import parse_plate_flats
 from .line_item_ops import parse_cut_length
 from .push import (
@@ -58,8 +57,6 @@ class PdfOnlyPlan:
     notes: tuple[str, ...] = ()
     bend_count: int | None = None
     line_note: str = ""
-    operations: tuple[str, ...] = ()
-    flats_from_chart: bool = False
 
 
 def _flag(field: str, detail: str) -> str:
@@ -291,50 +288,24 @@ def plan_pdf_only_part(
             notes=_with_grade(grade),
         )
 
-    def _apply_formed() -> PdfOnlyPlan | None:
-        """Refuse a bend callout, or develop a simple flat from the chart."""
+    def _formed_refuse() -> PdfOnlyPlan | None:
+        """A bend callout is not a flat laser plate. Do not invent L×W."""
         if linear and not plate:
             return None
-        decision = evaluate_formed(
-            f"{text}\n{title}",
-            material=None if grade.blocks else material,
-            thickness_in=float(thickness_in) if thickness_in is not None else None,
-        )
-        if decision is None:
+        reason = formed_flag(f"{text}\n{title}")
+        if not reason:
             return None
-        if decision.flag:
-            return PdfOnlyPlan(
-                route="refuse",
-                missing=(decision.flag_field,),
-                description=description,
-                material=None if grade.blocks else material,
-                thickness_in=float(thickness_in) if thickness_in is not None else None,
-                notes=_with_grade(grade, _flag(decision.flag_field, decision.flag)),
-            )
-        if grade.blocks:
-            return _blocked_grade()
-        # The chart can develop a flat. The line count is the Bend op's
-        # NumberOfBends, and no captured request sets it.
         return PdfOnlyPlan(
             route="refuse",
-            missing=("bend count",),
+            missing=("formed part",),
             description=description,
             material=None if grade.blocks else material,
             thickness_in=float(thickness_in) if thickness_in is not None else None,
-            width_in=decision.width_in,
-            length_in=decision.developed_length_in,
-            bend_count=None,
-            line_note=decision.line_note,
-            notes=_with_grade(
-                grade,
-                decision.line_note,
-                BEND_COUNT_WRITE_GAP_NOTE,
-                _flag("bend count", BEND_COUNT_NOT_SET),
-            ),
+            notes=_with_grade(grade, _flag("formed part", reason)),
         )
 
     if not plate and not linear:
-        formed = _apply_formed()
+        formed = _formed_refuse()
         if formed is not None:
             return formed
         return PdfOnlyPlan(route="unclassified")
@@ -375,7 +346,7 @@ def plan_pdf_only_part(
             notes=_with_grade(grade, note),
         )
 
-    formed = _apply_formed()
+    formed = _formed_refuse()
     if formed is not None:
         return formed
 

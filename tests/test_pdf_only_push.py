@@ -523,20 +523,21 @@ def _formed_plate(*extra: str) -> str:
             ("1 BEND", "90 DEG", "INSIDE RADIUS 0.25", "LEG 2.00", "LEG 3.00", "WIDTH 6.00"),
             "dimension convention was not stated",
         ),
-        (("FRONT VIEW", "SIDE VIEW"), "view-only shape has no bend callouts"),
-        (("UP",), "UP/DOWN callout has no angle and no count"),
-        (("90 DEG",), "a bend angle does not give a count"),
-        (("BEND RADIUS 0.25",), "a bend radius does not give a count"),
-        (("FORMED",), "FORMED does not give a count"),
-        (("BEND",), "BEND does not give a count"),
-        (("PRESS BRAKE",), "a press brake note does not give a count"),
+        (("FRONT VIEW", "SIDE VIEW"), "multiple views of a formed shape"),
+        (("UP",), "UP/DOWN"),
+        (("90 DEG",), "bend angle"),
+        (("BEND RADIUS 0.25",), "bend radius"),
+        (("FORMED",), "FORMED"),
+        (("BEND",), "BEND"),
+        (("PRESS BRAKE",), "press brake"),
     ],
 )
 def test_pdf_bend_callout_flags_formed_part(extra: tuple[str, ...], reason: str):
     plan = plan_pdf_only_part(text=_formed_plate(*extra), title="LIFT LOG GUSSET")
     assert plan.route == "refuse"
-    assert plan.missing[0] in {"formed part", "bend count"}
-    assert plan.notes[-1].startswith("FLAG:")
+    assert plan.missing == ("formed part",)
+    assert plan.bend_count is None
+    assert plan.notes[-1].startswith("FLAG: formed part — ")
     assert reason in plan.notes[-1]
     assert "Image Files" not in " ".join(plan.notes)
 
@@ -548,7 +549,8 @@ def test_formed_callout_without_plate_noun_still_refuses():
     )
     assert plan.route == "refuse"
     assert plan.notes[-1].startswith("FLAG: formed part — ")
-    assert "FORMED does not give a count" in plan.notes[-1]
+    assert "FORMED" in plan.notes[-1]
+    assert plan.bend_count is None
 
 
 def test_pdf_formed_part_stops_before_quote(tmp_path: Path, monkeypatch):
@@ -606,62 +608,16 @@ _ONE_BEND = "\n".join(
 )
 
 
-def test_pdf_formed_part_flags_unset_number_of_bends(tmp_path: Path, monkeypatch):
-    """A chart flat is not the line count. NumberOfBends cannot be written."""
-    from secturafab.bend_op import BEND_COUNT_NOT_SET
-    from secturafab.flat_pattern import BendChartRow
-
+def test_formed_part_without_flat_lw_stops_before_quote(tmp_path: Path, monkeypatch):
+    """Legs are not a flat L×W. Do not develop one, and do not create a quote."""
     _silence_chrome(monkeypatch)
-    row = BendChartRow(
-        material="A36",
-        thickness_in=0.25,
-        inside_radius_in=0.25,
-        punch_radius_in=0.25,
-        die_opening_in=2.0,
-        method="k",
-        value=0.5,
-    )
-    monkeypatch.setattr(
-        "secturafab.flat_pattern.load_bend_chart",
-        lambda *a, **k: (row,),
-    )
-    pdf = tmp_path / "73476004.pdf"
-    _write_pdf(pdf, _ONE_BEND)
-    client = MagicMock()
-    client.config.website_cookie = "ASP.NET_SessionId=test"
-    service = SecturaFabPushService(client=client)
-    with patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
-        service, "upload_drawings_quote_request", return_value="qr"
-    ) as upload, patch.object(
-        service, "finish_pdf_files"
-    ) as finish, patch.object(
-        service, "add_loose_linears"
-    ) as linear, patch(
-        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
-    ):
-        result = service.push_job(
-            title="FORMED BRACKET",
-            pdf_filename="73476004.pdf",
-            pdf_path=pdf,
-            stp_path=None,
-            takeoff={"library": {}},
-            times={},
-            job_id=8,
-            organization="Safe Cave",
-        )
-    assert result.ok is False
-    create_q.assert_not_called()
-    upload.assert_not_called()
-    finish.assert_not_called()
-    linear.assert_not_called()
-    assert result.error == f"FLAG: bend count — {BEND_COUNT_NOT_SET}"
-    blob = " ".join(result.notes or [])
-    assert "not the line bend count" in blob
-    assert "Bend op with Profile; bend count 1" not in blob
-
-
-def test_pdf_missing_bend_chart_row_stops_before_quote(tmp_path: Path, monkeypatch):
-    _silence_chrome(monkeypatch)
+    plan = plan_pdf_only_part(text=_ONE_BEND, title="FORMED BRACKET")
+    assert plan.route == "refuse"
+    assert plan.missing == ("formed part",)
+    assert plan.length_in is None
+    assert plan.width_in is None
+    assert plan.bend_count is None
+    assert plan.notes[-1].startswith("FLAG: formed part — ")
     pdf = tmp_path / "73476004.pdf"
     _write_pdf(pdf, _ONE_BEND)
     client = MagicMock()
@@ -693,7 +649,8 @@ def test_pdf_missing_bend_chart_row_stops_before_quote(tmp_path: Path, monkeypat
     linear.assert_not_called()
     assert result.error is not None
     assert result.error.startswith("FLAG: formed part — ")
-    assert "no press brake chart row" in result.error
+    assert "not quoting it as a flat laser plate" in result.error
+    assert "bend allowance" not in (result.error or "")
 
 
 def _no_hole_zero_contour_finish() -> dict:
