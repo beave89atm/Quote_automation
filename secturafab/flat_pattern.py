@@ -142,11 +142,8 @@ class BendCount:
     source: str = ""
 
 
-# Captured Bend rows (q10488, q10504) are labeled FieldName "Number of Bends",
-# but Value, InitValue, and UnitTime on those rows are hours, and Quantity is
-# 1 on every sample. AddOperation in this repo writes a weld, not a bend.
-# There is no Bend-op field to set the count in, so the count stays on the line.
-BEND_OP_COUNT_FIELD = None
+# Drawing callouts feed the flat-pattern calculator only. The line's bend
+# count is NumberOfBends on the Bend operation (secturafab.bend_op).
 
 
 def _bend_line_count(text: str) -> int | None:
@@ -550,8 +547,7 @@ def _line_note(
         f"value={row.value:g}; "
         f"developed length {developed:.6g} in; "
         f"width {read.width_in:g} in; "
-        f"ops Profile, Bend; "
-        f"bend count {read.bend_count} from {read.count_source}"
+        f"calculator bends {read.bend_count} (not the line bend count)"
     )
 
 
@@ -577,7 +573,7 @@ def evaluate_formed(
     if read.angles and any(abs(angle - 90.0) > 0.01 for angle in read.angles):
         return FlatPattern(flag="bend angle is not 90°")
     if read.count_flag:
-        return FlatPattern(flag=read.count_flag, flag_field="bend count")
+        return FlatPattern(flag=read.count_flag, flag_field="formed part")
     if not read.callout:
         return None
     blocked = _blocking_reason(read)

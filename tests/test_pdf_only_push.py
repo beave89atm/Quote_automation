@@ -547,7 +547,7 @@ def test_formed_callout_without_plate_noun_still_refuses():
         title="BRACKET",
     )
     assert plan.route == "refuse"
-    assert plan.notes[-1].startswith("FLAG: bend count — ")
+    assert plan.notes[-1].startswith("FLAG: formed part — ")
     assert "FORMED does not give a count" in plan.notes[-1]
 
 
@@ -606,10 +606,9 @@ _ONE_BEND = "\n".join(
 )
 
 
-def test_pdf_one_bend_flat_feeds_image_files(tmp_path: Path, monkeypatch):
-    """Developed L×W is stamped, with Profile and Bend, from a fixture chart row."""
-    import math
-
+def test_pdf_formed_part_flags_unset_number_of_bends(tmp_path: Path, monkeypatch):
+    """A chart flat is not the line count. NumberOfBends cannot be written."""
+    from secturafab.bend_op import BEND_COUNT_NOT_SET
     from secturafab.flat_pattern import BendChartRow
 
     _silence_chrome(monkeypatch)
@@ -626,29 +625,20 @@ def test_pdf_one_bend_flat_feeds_image_files(tmp_path: Path, monkeypatch):
         "secturafab.flat_pattern.load_bend_chart",
         lambda *a, **k: (row,),
     )
-    allowance = (math.pi / 2.0) * (0.25 + 0.5 * 0.25)
-    developed = 2.0 + 3.0 + allowance
     pdf = tmp_path / "73476004.pdf"
     _write_pdf(pdf, _ONE_BEND)
     client = MagicMock()
-    client.upload_pdf_via_page_add_files.return_value = plate_upload_bound()
-    client.stamp_pdf_kendo_flats.return_value = plate_perimeter_stamp()
-    client.add_item_pdf_files.return_value = plate_gold_finish_response()
-    client.quote_item_read.return_value = {}
-    client.quote_item_read_treelist.return_value = {}
-    gold = {
-        "QuoteNumber": "73476004",
-        "Description": "FORMED BRACKET",
-        "ItemCount": 1,
-        "ItemList": [plate_gold_line("FORMED BRACKET")],
-        **_ORG,
-    }
-    client.get_json.side_effect = _quote_gets(gold)
-    service = _service(client)
-    patches = _common_patches(service, "FORMED BRACKET")
-    for item in patches:
-        item.start()
-    try:
+    client.config.website_cookie = "ASP.NET_SessionId=test"
+    service = SecturaFabPushService(client=client)
+    with patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
+        service, "upload_drawings_quote_request", return_value="qr"
+    ) as upload, patch.object(
+        service, "finish_pdf_files"
+    ) as finish, patch.object(
+        service, "add_loose_linears"
+    ) as linear, patch(
+        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
+    ):
         result = service.push_job(
             title="FORMED BRACKET",
             pdf_filename="73476004.pdf",
@@ -659,30 +649,15 @@ def test_pdf_one_bend_flat_feeds_image_files(tmp_path: Path, monkeypatch):
             job_id=8,
             organization="Safe Cave",
         )
-    finally:
-        for item in reversed(patches):
-            item.stop()
-
-    assert result.ok is True, (result.error, result.notes)
-    stamped = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
-    assert float(stamped["Length"]) == pytest.approx(developed)
-    assert float(stamped["Width"]) == pytest.approx(6.0)
-    assert "BendCount" not in stamped
-    assert "Quantity" not in stamped
-    note = stamped["Notes"]
-    assert "legs 2, 3 in" in note
-    assert "convention inside" in note
-    assert "thickness 0.25 in" in note
-    assert "inside radius 0.25 in" in note
-    assert "bend allowance" in note
-    assert "bend deduction" in note
-    assert "method=k" in note
-    assert "value=0.5" in note
-    assert "config/press_brake_bends.csv" in note
+    assert result.ok is False
+    create_q.assert_not_called()
+    upload.assert_not_called()
+    finish.assert_not_called()
+    linear.assert_not_called()
+    assert result.error == f"FLAG: bend count — {BEND_COUNT_NOT_SET}"
     blob = " ".join(result.notes or [])
-    assert "FLAG: formed part" not in blob
-    assert "ops Profile, Bend" in blob
-    assert "Bend op with Profile; bend count 1" in blob
+    assert "not the line bend count" in blob
+    assert "Bend op with Profile; bend count 1" not in blob
 
 
 def test_pdf_missing_bend_chart_row_stops_before_quote(tmp_path: Path, monkeypatch):

@@ -1,0 +1,23 @@
+{
+  "note": "Minimal stand-in for the q10368 Bend param. Not a full quote tree. NumberOfBends 2 and Time 60 are the captured values; TimePerBend 30 makes Time = NumberOfBends x TimePerBend.",
+  "OperationParamList": [
+    {
+      "QuoteOperationID": "q10368-bend",
+      "DataOperationList": [
+        {
+          "NumberOfBends": 2,
+          "TimePerBend": 30,
+          "NumberOfOperators": 1,
+          "CalcParamType": "bend",
+          "CalcName": "Bend",
+          "FieldParam": "Number of Bends",
+          "Execute": true,
+          "Time": 60,
+          "Time_Units": "second",
+          "Result": 60,
+          "Result_Units": "second"
+        }
+      ]
+    }
+  ]
+}

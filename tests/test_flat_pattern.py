@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from secturafab.bend_op import BEND_COUNT_NOT_SET
 from secturafab.flat_pattern import (
-    BEND_OP_COUNT_FIELD,
     BendChartRow,
     _extract_bend_count,
     allowance_and_deduction,
@@ -91,33 +91,10 @@ def test_conflicting_bend_signals_flag_instead_of_guessing():
     )
     assert plan.route == "refuse"
     assert plan.bend_count is None
-    assert plan.notes[-1].startswith("FLAG: bend count — ")
+    assert plan.notes[-1].startswith("FLAG: formed part — ")
     assert "signals conflict" in plan.notes[-1]
     assert "explicit count=2" in plan.notes[-1]
     assert "UP/DOWN callouts=1" in plan.notes[-1]
-
-
-def test_missing_text_layer_flags_bend_count(tmp_path: Path):
-    import fitz
-
-    from secturafab.pdf_only import plan_pdf_only_file
-
-    pdf = tmp_path / "blank.pdf"
-    doc = fitz.open()
-    doc.new_page()
-    doc.save(pdf)
-    doc.close()
-    plan = plan_pdf_only_file(pdf, title="BRACKET")
-    assert plan.route == "refuse"
-    assert plan.bend_count is None
-    assert plan.notes[-1].startswith("FLAG: bend count — ")
-    assert "text layer is missing" in plan.notes[-1]
-    assert "not guessed" in plan.notes[-1]
-
-
-def test_bend_count_is_not_written_into_an_invented_op_field():
-    """The Bend calculator has no count field this repo can set."""
-    assert BEND_OP_COUNT_FIELD is None
 
 
 def test_shipped_bend_chart_has_no_data_rows():
@@ -158,13 +135,17 @@ def test_one_bend_inside_flat_matches_hand_allowance(monkeypatch):
             "WIDTH 6.00",
         ]
     )
+    flat = evaluate_formed(text, material="A36", thickness_in=0.25)
+    assert flat is not None and flat.flag is None
+    assert flat.developed_length_in == pytest.approx(2.0 + 3.0 + BEND_ALLOWANCE)
+    assert flat.width_in == pytest.approx(6.0)
     plan = plan_pdf_only_part(text=text, title="FORMED BRACKET")
-    assert plan.route == "image_files"
-    assert plan.flats_from_chart is True
-    assert plan.bend_count == 1
-    assert plan.operations == ("Profile", "Bend")
-    assert plan.width_in == pytest.approx(6.0)
-    assert plan.length_in == pytest.approx(2.0 + 3.0 + BEND_ALLOWANCE)
+    assert plan.route == "refuse"
+    assert plan.bend_count is None
+    assert plan.flats_from_chart is False
+    assert plan.notes[-1] == f"FLAG: bend count — {BEND_COUNT_NOT_SET}"
+    assert "calculator bends 1" in plan.line_note
+    assert "not the line bend count" in plan.line_note
     assert "convention inside" in plan.line_note
     assert "legs 2, 3 in" in plan.line_note
     assert "thickness 0.25 in" in plan.line_note
@@ -174,7 +155,6 @@ def test_one_bend_inside_flat_matches_hand_allowance(monkeypatch):
     assert "method=k" in plan.line_note
     assert "value=0.5" in plan.line_note
     assert "config/press_brake_bends.csv" in plan.line_note
-    assert "ops Profile, Bend" in plan.line_note
     assert "FLAG: formed part" not in " ".join(plan.notes)
     allowance, deduction = allowance_and_deduction(
         FIXTURE_ROW,
@@ -203,12 +183,15 @@ def test_two_bend_mold_line_flat_matches_hand_deduction(monkeypatch):
             "WIDTH 8.00",
         ]
     )
+    flat = evaluate_formed(text, material="A36", thickness_in=0.25)
+    assert flat is not None and flat.developed_length_in == pytest.approx(
+        1.5 + 4.0 + 1.5 - 2.0 * BEND_DEDUCTION
+    )
     plan = plan_pdf_only_part(text=text, title="FORMED BRACKET")
-    assert plan.route == "image_files"
-    assert plan.bend_count == 2
-    assert plan.operations == ("Profile", "Bend")
-    assert plan.width_in == pytest.approx(8.0)
-    assert plan.length_in == pytest.approx(1.5 + 4.0 + 1.5 - 2.0 * BEND_DEDUCTION)
+    assert plan.route == "refuse"
+    assert plan.bend_count is None
+    assert plan.length_in == pytest.approx(flat.developed_length_in)
+    assert "calculator bends 2" in plan.line_note
     assert "convention mold-line" in plan.line_note
     assert "legs 1.5, 4, 1.5 in" in plan.line_note
     assert "bend deduction" in plan.line_note
