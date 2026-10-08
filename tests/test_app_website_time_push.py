@@ -819,7 +819,7 @@ def test_app_process_job_then_push_uses_website_weldment(tmp_path: Path, monkeyp
         assert "AddItem_PDFFiles" in blob or "Image Files" in blob
         assert "AddItem_Linear" in blob or "Long" in blob
         assert "AddOperation" in blob
-        assert "Time Manufacturing Waco" in blob
+        assert TIME_WACO_ORG_NAME in blob
     finally:
         if previous is None:
             os.environ.pop("KANNON_DATA_DIR", None)

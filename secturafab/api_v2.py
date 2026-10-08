@@ -1,19 +1,23 @@
 """SecturaFAB REST API 2.0 client (spec dated 2026-10-07).
 
-Quote create is ``POST /api/v2/quote`` with ``OrganizationId``. The customer
-name is resolved first with ``GET /api/v2/organization/lookup``. Zero matches
-and more than one match fail closed. ``POST /api/v2/organization`` is not
-called from here — creating an organization is a human decision.
+Quote create is ``POST /api/v2/quote`` with ``OrganizationId``. A customer
+name is an exact Sectura organization name. Lookup is
+``GET /api/v2/organization/lookup`` with exactly one of ``name`` or
+``externalReference``. Zero matches and more than one match fail closed.
+Time Waco is not looked up by name: it is
+``GET /api/v2/organization/{id}`` for the known id. This module never
+creates an organization or customer. v2 has no customer endpoint.
 
-``QuoteResponse`` no longer has ``LocationName``. Add-linear and add-plate
-bodies no longer take ``QuoteItemId``.
+``QuoteResponse.QuoteStatus`` is text and carries values such as
+``OPEN-NEW``. ``Status`` is a separate field. ``LocationName`` is gone.
+Add-linear and add-plate bodies no longer take ``QuoteItemId``.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from .client import SecturaFabApiError, SecturaFabClient
+from .client import SecturaFabApiError, SecturaFabClient, sectura_error_detail
 from .website import EMPTY_GUID
 
 LOOKUP_PATH = "v2/organization/lookup"
@@ -33,10 +37,10 @@ class OrganizationLookupError(SecturaFabApiError):
 
 
 def refuse_create_organization(*_args: Any, **_kwargs: Any) -> None:
-    """``POST /api/v2/organization`` stays a human decision."""
+    """No API version and no website path may create an organization."""
     raise OrganizationLookupError(
-        "FLAG: refusing to create an organization — "
-        "POST /api/v2/organization needs a human decision"
+        "FLAG: refusing to create an organization or customer. "
+        "A lookup miss stops the push. Not creating an organization."
     )
 
 
@@ -103,6 +107,20 @@ def _flag_name(name: str | None, external_reference: str | None) -> str:
     return "(no name)"
 
 
+_EXACT_NAME = (
+    "Use the exact Sectura organization name. "
+    "Partial names and 'Name - Location' forms do not match."
+)
+_NO_CREATE = "Not creating the quote and not creating an organization."
+
+
+def _error_suffix(exc: SecturaFabApiError) -> str:
+    detail = sectura_error_detail(getattr(exc, "body", None))
+    if detail:
+        return f" — {detail}"
+    return ""
+
+
 def resolve_organization_id(
     client: SecturaFabClient,
     *,
@@ -112,35 +130,33 @@ def resolve_organization_id(
 ) -> str:
     """One ``OrganizationId`` from lookup. Zero or many matches raise.
 
-    ``known_id`` is a cross-check (the Time Waco id the shop already uses).
-    A different lookup id fails closed. Lookup is not skipped in favor of
-    the known id, and a miss does not create an organization.
+    The live lookup accepts exactly one of ``name`` or ``externalReference``.
+    ``known_id`` is a cross-check. A different id fails closed. A miss does
+    not create an organization. Time Waco does not use this function.
     """
     label = _flag_name(name, external_reference)
     org_name = _clean(name)
     external = _clean(external_reference)
-    if not org_name and not external:
+    if bool(org_name) == bool(external):
         raise OrganizationLookupError(
-            "FLAG: organization lookup needs a customer name — "
-            "not creating the quote and not creating an organization"
+            "FLAG: organization lookup must send exactly one of name or "
+            "externalReference. Provide exactly one of name or externalReference. "
+            f"{_NO_CREATE}"
         )
-    params: dict[str, str] = {}
-    if org_name:
-        params["name"] = org_name
-    if external:
-        params["externalReference"] = external
+    params = {"name": org_name} if org_name else {"externalReference": external}
     try:
         payload = client.get_json(LOOKUP_PATH, params=params)
     except SecturaFabApiError as exc:
         if exc.status_code == 404:
+            detail = sectura_error_detail(getattr(exc, "body", None))
+            extra = f"{detail}. " if detail else ""
             raise OrganizationLookupError(
-                f"FLAG: organization lookup for {label} matched no organization — "
-                "not creating the quote and not creating an organization"
+                f"FLAG: organization lookup for {label} matched no organization. "
+                f"{extra}{_EXACT_NAME} {_NO_CREATE}"
             ) from exc
         raise OrganizationLookupError(
             f"FLAG: organization lookup for {label} failed "
-            f"({exc.status_code}) — not creating the quote and not creating "
-            "an organization"
+            f"({exc.status_code}){_error_suffix(exc)}. {_NO_CREATE}"
         ) from exc
     rows, count = organization_matches(payload)
     if count > 1 or len(rows) > 1:
@@ -151,30 +167,129 @@ def resolve_organization_id(
         extra = f" ({shown})" if shown else ""
         declared = f"{count} organizations" if count != len(rows) else f"{len(rows)} organizations"
         raise OrganizationLookupError(
-            f"FLAG: organization lookup for {label} matched {declared}{extra} — "
-            "not creating the quote and not creating an organization",
+            f"FLAG: organization lookup for {label} matched {declared}{extra}. "
+            f"{_EXACT_NAME} {_NO_CREATE}",
             matches=rows,
         )
     if not rows:
         raise OrganizationLookupError(
-            f"FLAG: organization lookup for {label} matched no organization — "
-            "not creating the quote and not creating an organization"
+            f"FLAG: organization lookup for {label} matched no organization. "
+            f"{_EXACT_NAME} {_NO_CREATE}"
         )
     found = _valid_org_id(rows[0].get("OrganizationId"))
     if not found:
         raise OrganizationLookupError(
-            f"FLAG: organization lookup for {label} matched no organization — "
-            "not creating the quote and not creating an organization"
+            f"FLAG: organization lookup for {label} matched no organization. "
+            f"{_EXACT_NAME} {_NO_CREATE}"
+        )
+    got_name = _clean(rows[0].get("Name"))
+    if org_name and got_name and got_name.casefold() != org_name.casefold():
+        raise OrganizationLookupError(
+            f"FLAG: organization lookup for {label} returned {got_name!r}, "
+            f"which is not an exact name match. {_EXACT_NAME} {_NO_CREATE}",
+            matches=rows,
         )
     want = _valid_org_id(known_id)
     if want and found.casefold() != want.casefold():
         raise OrganizationLookupError(
             f"FLAG: organization lookup for {label} returned {found} which does "
-            f"not match known organization id {want} — not creating the quote "
-            "and not creating an organization",
+            f"not match known organization id {want}. {_NO_CREATE}",
             matches=rows,
         )
     return found
+
+
+def fetch_organization_by_id(
+    client: SecturaFabClient, organization_id: str
+) -> dict[str, Any]:
+    """``GET /api/v2/organization/{id}``. Does not create an organization."""
+    oid = _valid_org_id(organization_id)
+    if not oid:
+        raise OrganizationLookupError(
+            f"FLAG: organization id is missing. {_NO_CREATE}"
+        )
+    path = f"v2/organization/{oid}"
+    try:
+        payload = client.get_json(path)
+    except SecturaFabApiError as exc:
+        raise OrganizationLookupError(
+            f"FLAG: GET /api/v2/organization/{oid} failed "
+            f"({exc.status_code}){_error_suffix(exc)}. {_NO_CREATE}"
+        ) from exc
+    rows, count = organization_matches(payload)
+    if count != 1 or len(rows) != 1:
+        raise OrganizationLookupError(
+            f"FLAG: GET /api/v2/organization/{oid} matched no organization. "
+            f"{_EXACT_NAME} {_NO_CREATE}"
+        )
+    return rows[0]
+
+
+def organization_id_for_new_quote(
+    client: SecturaFabClient,
+    *,
+    name: str | None = None,
+    organization_id: str | None = None,
+) -> tuple[str, str]:
+    """``(organization id, exact name)`` for a new quote.
+
+    Time Waco always uses ``GET /api/v2/organization/{known id}``. The name
+    ``Time Manufacturing Waco`` is refused before any HTTP. Other customers
+    are an exact-name lookup with one parameter. An empty name and empty id
+    returns ``("", "")``.
+    """
+    from .org_ops import (
+        TIME_WACO_ORG_ID,
+        TIME_WACO_ORG_NAME,
+        rejected_time_org_name,
+        time_waco_org_id_for_name,
+    )
+
+    org_name = _clean(name)
+    org_id = _valid_org_id(organization_id)
+    if rejected_time_org_name(org_name):
+        raise OrganizationLookupError(
+            f"FLAG: {org_name!r} is not an exact Sectura organization name. "
+            f"Time Waco is {TIME_WACO_ORG_NAME!r} ({TIME_WACO_ORG_ID}), "
+            "resolved by GET /api/v2/organization/{id}, never by name lookup. "
+            f"{_EXACT_NAME} {_NO_CREATE}"
+        )
+    time_name = bool(time_waco_org_id_for_name(org_name))
+    time_id = bool(org_id) and org_id.casefold() == TIME_WACO_ORG_ID.casefold()
+    if time_name or time_id:
+        if org_name and not time_name:
+            raise OrganizationLookupError(
+                f"FLAG: organization id {TIME_WACO_ORG_ID} is "
+                f"{TIME_WACO_ORG_NAME!r}, not {org_name!r}. {_EXACT_NAME} {_NO_CREATE}"
+            )
+        if org_id and not time_id:
+            raise OrganizationLookupError(
+                f"FLAG: {TIME_WACO_ORG_NAME!r} is organization {TIME_WACO_ORG_ID}, "
+                f"not {org_id}. {_NO_CREATE}"
+            )
+        row = fetch_organization_by_id(client, TIME_WACO_ORG_ID)
+        found = _valid_org_id(row.get("OrganizationId"))
+        got_name = _clean(row.get("Name"))
+        if found.casefold() != TIME_WACO_ORG_ID.casefold():
+            raise OrganizationLookupError(
+                f"FLAG: GET /api/v2/organization/{TIME_WACO_ORG_ID} returned "
+                f"{found or '(blank)'}. {_NO_CREATE}"
+            )
+        if got_name.casefold() != TIME_WACO_ORG_NAME.casefold():
+            raise OrganizationLookupError(
+                f"FLAG: GET /api/v2/organization/{TIME_WACO_ORG_ID} returned "
+                f"name {got_name!r}. Time Waco is the exact Sectura organization "
+                f"name {TIME_WACO_ORG_NAME!r}. {_NO_CREATE}"
+            )
+        return found, TIME_WACO_ORG_NAME
+    if not org_name:
+        return org_id, ""
+    resolved = resolve_organization_id(
+        client,
+        name=org_name,
+        known_id=org_id or None,
+    )
+    return resolved, org_name
 
 
 def build_create_quote_body(
@@ -280,11 +395,12 @@ def create_quote_from_payload(client: SecturaFabClient, payload: dict[str, Any] 
     raw = payload if isinstance(payload, dict) else {}
     name = _clean(raw.get("OrganizationName") or raw.get("Name"))
     org_id = _valid_org_id(raw.get("OrganizationId"))
-    if name:
-        org_id = resolve_organization_id(
+    # Quote ExternalReference is the shop number, not an organization key.
+    if name or org_id:
+        org_id, _resolved_name = organization_id_for_new_quote(
             client,
             name=name,
-            known_id=org_id or None,
+            organization_id=org_id,
         )
     return post_create_quote(
         client,

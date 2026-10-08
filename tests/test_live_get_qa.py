@@ -175,7 +175,7 @@ def test_push_job_fails_closed_when_live_get_has_empty_ops(tmp_path):
         return_value=["built"],
     ), patch(
         "secturafab.push.apply_quote_organization",
-        return_value=["Set Organization: Time Manufacturing Waco"],
+        return_value=["Set Organization: Time Manufacturing"],
     ), patch(
         "secturafab.push.persist_quote_header", return_value=[]
     ), patch(
@@ -374,7 +374,7 @@ def test_finish_success_still_persists_cad_then_linear(tmp_path):
         "secturafab.push.retype_linears_to_pt10_keep_persist", return_value=[]
     ), patch(
         "secturafab.push.apply_quote_organization",
-        return_value=["Set Organization: Time Manufacturing Waco"],
+        return_value=["Set Organization: Time Manufacturing"],
     ):
         result = service.push_job(
             title="1001898",
@@ -406,18 +406,23 @@ def test_parse_live_cad_description_onto_fields():
     assert flats["length_in"] == 10.0
 
 
-def test_list_orgs_still_searches_time_after_other_customers():
+def test_list_orgs_exact_name_does_not_take_a_location_form():
     from secturafab.org_ops import find_organization_by_name
 
     client = MagicMock()
 
     def _get(path: str):
         p = str(path)
-        if "Search=Time" in p or "Search=TIME" in p or "Name=Time" in p:
+        if "Name=Time" in p:
             return {
                 "HasNext": False,
                 "Results": [
-                    {"ID": "time-real", "OrganizationName": "TIME - Waco", "Active": True}
+                    {"ID": "duplicate", "OrganizationName": "TIME - Waco", "Active": True},
+                    {
+                        "ID": "time-real",
+                        "OrganizationName": "Time Manufacturing",
+                        "Active": True,
+                    },
                 ],
             }
         return {
@@ -426,7 +431,9 @@ def test_list_orgs_still_searches_time_after_other_customers():
         }
 
     client.get_json.side_effect = _get
-    org = find_organization_by_name(client, "Time Manufacturing Waco")
+    assert find_organization_by_name(client, "Time Manufacturing Waco") is None
+    assert find_organization_by_name(client, "TIME - Waco") is None
+    org = find_organization_by_name(client, "Time Manufacturing")
     assert org is not None
     assert org["ID"] == "time-real"
 

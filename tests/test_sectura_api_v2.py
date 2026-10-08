@@ -129,15 +129,218 @@ def test_lookup_404_is_no_match():
 
 def test_known_id_mismatch_fails_closed():
     client = _client_with_lookup(
-        {"Data": {"OrganizationId": _OTHER, "Name": "Time Manufacturing Waco"}}
+        {"Data": {"OrganizationId": _OTHER, "Name": "Other Shop"}}
     )
     with pytest.raises(OrganizationLookupError, match="does not match known"):
-        resolve_organization_id(client, name="Time Manufacturing Waco", known_id=_ORG)
+        resolve_organization_id(client, name="Other Shop", known_id=_ORG)
     client.post_json.assert_not_called()
 
 
+def test_lookup_sends_exactly_one_parameter():
+    client = _client_with_lookup(
+        {"Data": {"OrganizationId": _ORG, "Name": "Propell"}}
+    )
+    assert resolve_organization_id(client, name="Propell") == _ORG
+    assert client.get_json.call_args.kwargs["params"] == {"name": "Propell"}
+    assert resolve_organization_id(client, external_reference="EXT-1") == _ORG
+    assert client.get_json.call_args.kwargs["params"] == {"externalReference": "EXT-1"}
+    client.get_json.reset_mock()
+    with pytest.raises(OrganizationLookupError, match="exactly one"):
+        resolve_organization_id(client, name="Propell", external_reference="EXT-1")
+    with pytest.raises(OrganizationLookupError, match="exactly one"):
+        resolve_organization_id(client)
+    client.get_json.assert_not_called()
+    client.post_json.assert_not_called()
+
+
+def test_lookup_error_body_is_named_in_the_flag():
+    client = MagicMock()
+    client.get_json.side_effect = SecturaFabApiError(
+        "API request failed (400)",
+        status_code=400,
+        body={
+            "Error": {
+                "Name": "BadRequest",
+                "Description": "Provide exactly one of name or externalReference.",
+            }
+        },
+    )
+    with pytest.raises(OrganizationLookupError, match="Error.Name=BadRequest") as raised:
+        resolve_organization_id(client, name="Propell")
+    text = str(raised.value)
+    assert "Error.Description=Provide exactly one of name or externalReference." in text
+    assert "failed (400)" in text
+    client.post_json.assert_not_called()
+
+
+def test_lookup_miss_names_the_exact_organization_and_makes_no_write():
+    from secturafab.push import SecturaFabPushService
+
+    client = MagicMock()
+    client.get_json.side_effect = SecturaFabApiError(
+        "missing",
+        status_code=404,
+        body={"Error": {"Name": "NotFound", "Description": "No match"}},
+    )
+    with pytest.raises(OrganizationLookupError, match="exact Sectura organization name") as raised:
+        SecturaFabPushService(client=client).create_quote(
+            quote_number="ZZ-MISS",
+            organization_name="No Such Shop",
+        )
+    text = str(raised.value)
+    assert "FLAG:" in text
+    assert "Error.Name=NotFound" in text
+    assert "Error.Description=No match" in text
+    assert "not creating" in text.lower() or "Not creating" in text
+    client.post_json.assert_not_called()
+    client.put_json.assert_not_called()
+    client.delete_json.assert_not_called()
+    client.request.assert_not_called()
+    client.get_json.assert_called_once()
+    assert client.get_json.call_args.args[0] == "v2/organization/lookup"
+    assert client.get_json.call_args.kwargs["params"] == {"name": "No Such Shop"}
+
+
+def test_time_waco_resolves_by_id_and_refuses_the_duplicate_name():
+    from secturafab.push import SecturaFabPushService
+
+    client = MagicMock()
+
+    def _get(path, **_kwargs):
+        if f"v2/organization/{_ORG}" in str(path):
+            return {
+                "Data": {
+                    "OrganizationId": _ORG,
+                    "Name": "Time Manufacturing",
+                    "ExternalReference": None,
+                }
+            }
+        return {"ProfitModel": 1, "QuoteStatus": "OPEN-NEW", "PrimaryOrganizationID": _ORG}
+
+    client.get_json.side_effect = _get
+    client.post_json.return_value = {"Data": {"QuoteId": "time-qid"}}
+    with patch(
+        "secturafab.chrome_cdp.minted_edit_tab_ready",
+        return_value={"ok": True, "tab": {}},
+    ), patch(
+        "secturafab.page_weld.set_page_quote_number",
+        return_value=["QuoteNumber set via UpdatePropertyValue"],
+    ), patch(
+        "secturafab.page_weld.set_page_quote_description",
+        return_value=["Description set"],
+    ), patch(
+        "secturafab.chrome_cdp.bind_quote_organization_detail",
+        return_value={
+            "ok": True,
+            "via": "OrganizationDetail",
+            "search": False,
+            "org_id": _ORG,
+        },
+    ):
+        quote_id = SecturaFabPushService(client=client).create_quote(
+            quote_number="ZZ-TIME",
+            description="BRACKET",
+            organization_name="Time Manufacturing",
+        )
+    assert quote_id == "time-qid"
+    assert client.get_json.call_args_list[0].args[0] == f"v2/organization/{_ORG}"
+    assert all("lookup" not in str(call.args[0]) for call in client.get_json.call_args_list)
+    assert client.post_json.call_args.args[1]["OrganizationId"] == _ORG
+
+    client.get_json.reset_mock()
+    client.post_json.reset_mock()
+    with pytest.raises(OrganizationLookupError, match="Time Manufacturing Waco"):
+        SecturaFabPushService(client=client).create_quote(
+            quote_number="ZZ-TIME",
+            organization_name="Time Manufacturing Waco",
+        )
+    client.get_json.assert_not_called()
+    client.post_json.assert_not_called()
+    client.request.assert_not_called()
+
+
+def test_parse_or_raise_surfaces_v2_error_name_and_description():
+    class _Response:
+        status_code = 400
+        url = "https://example.invalid/api/v2/organization/not-a-guid"
+        content = b"{}"
+
+        def json(self):
+            return {
+                "Error": {
+                    "Name": "BadRequest",
+                    "Description": "The organizationId must be a valid Guid.",
+                }
+            }
+
+    with pytest.raises(SecturaFabApiError, match="Error.Name=BadRequest") as raised:
+        from secturafab.client import SecturaFabClient
+
+        SecturaFabClient._parse_or_raise(_Response())
+    assert "Error.Description=The organizationId must be a valid Guid." in str(raised.value)
+
+
+def test_no_organization_or_customer_create_call_in_client_or_push():
+    import ast
+    from pathlib import Path
+
+    from secturafab.client import is_organization_or_customer_create
+
+    roots = [
+        Path("secturafab/client.py"),
+        Path("secturafab/push.py"),
+        Path("secturafab/api_v2.py"),
+        Path("secturafab/org_ops.py"),
+        Path("secturafab/quotes.py"),
+        Path("secturafab/chrome_cdp.py"),
+    ]
+    write_names = {"post_json", "put_json", "post_multipart", "delete_json"}
+    hits: list[str] = []
+    for path in roots:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            method = ""
+            raw_path = None
+            if name in {"request", "website_request"} and node.args:
+                if isinstance(node.args[0], ast.Constant):
+                    method = str(node.args[0].value)
+                if len(node.args) > 1 and isinstance(node.args[1], ast.Constant):
+                    raw_path = str(node.args[1].value)
+            elif name in write_names and node.args and isinstance(node.args[0], ast.Constant):
+                method = {"put_json": "PUT", "delete_json": "DELETE"}.get(name, "POST")
+                raw_path = str(node.args[0].value)
+            if raw_path and is_organization_or_customer_create(method, raw_path):
+                hits.append(f"{path}:{node.lineno} {method} {raw_path}")
+    assert hits == []
+
+
+def test_client_refuses_organization_create_before_http():
+    from secturafab.client import SecturaFabClient
+    from secturafab.config import SecturaFabConfig
+
+    client = SecturaFabClient(
+        config=SecturaFabConfig(
+            base_url="https://example.invalid",
+            token_url_override="https://example.invalid/token",
+        )
+    )
+    client.session = MagicMock()
+    client.authenticate = MagicMock(side_effect=AssertionError("auth"))
+    with pytest.raises(SecturaFabApiError, match="Not creating an organization"):
+        client.request("POST", "v2/organization", json={"Name": "Nope"})
+    with pytest.raises(SecturaFabApiError, match="Not creating an organization"):
+        client.website_request("POST", "Organization/Create")
+    client.session.request.assert_not_called()
+    client.authenticate.assert_not_called()
+
+
 def test_refuse_create_organization_does_not_post():
-    with pytest.raises(OrganizationLookupError, match="human decision"):
+    with pytest.raises(OrganizationLookupError, match="Not creating an organization"):
         refuse_create_organization()
 
 
@@ -260,7 +463,7 @@ def test_create_quote_discards_only_the_quote_this_post_created():
 
     client = MagicMock()
     with patch(
-        "secturafab.push.resolve_organization_id",
+        "secturafab.push.organization_id_for_new_quote",
         side_effect=OrganizationLookupError("FLAG: no organization match"),
     ), pytest.raises(OrganizationLookupError, match="no organization"):
         SecturaFabPushService(client=client).create_quote(
@@ -322,6 +525,8 @@ def test_rest_mint_header_is_flagged_without_a_status_write():
     assert "ProfitModel 0" in draft
     assert "OPEN-DRAFT" in draft
     assert "No supported call" in draft
+    assert "QuoteStatus" in draft
+    assert "has no OPEN-NEW" not in draft
     entered = rest_mint_header_flag({"ProfitModel": "Margin", "Status": "Entered"})
     assert entered is not None
     assert "Margin" in entered

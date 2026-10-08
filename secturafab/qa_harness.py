@@ -180,19 +180,11 @@ def evaluate_quote_get(
         if oid in {"", EMPTY_GUID}:
             failures.append(f"PrimaryOrganizationID is null or empty GUID ({oid!r})")
         if expected_org and org:
-            got_l = org.casefold()
-            want_l = expected_org.casefold()
-            tokens_g = set(re.findall(r"[a-z0-9]+", got_l))
-            tokens_w = set(re.findall(r"[a-z0-9]+", want_l))
-            fuzzy = (
-                got_l == want_l
-                or got_l.startswith(want_l)
-                or want_l.startswith(got_l)
-                or ("time" in tokens_g and "time" in tokens_w)
-                or len(tokens_g & tokens_w) >= 2
-            )
-            if not fuzzy:
-                failures.append(f"Organization is {org!r}, wanted {expected_org!r}")
+            if org.casefold() != expected_org.casefold():
+                failures.append(
+                    f"Organization is {org!r}, wanted {expected_org!r}. "
+                    "Use the exact Sectura organization name."
+                )
     if org:
         notes.append(f"Organization={org}")
 

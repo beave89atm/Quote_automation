@@ -20,7 +20,7 @@ _DRAWING_TO_ORGANIZATION: list[tuple[re.Pattern[str], str]] = [
     ),
     (
         re.compile(r"\bTIME\s+MANUFACTURING\b", re.IGNORECASE),
-        "Time Manufacturing Waco",
+        "Time Manufacturing",
     ),
 ]
 
@@ -36,11 +36,11 @@ _FOLDER_TO_ORGANIZATION: list[tuple[re.Pattern[str], str]] = [
             r"(?:Customer\s+Drawings|\bEngineering\b)[\\/]+Time\b|[\\/]Time[\\/]",
             re.IGNORECASE,
         ),
-        "Time Manufacturing Waco",
+        "Time Manufacturing",
     ),
     (
         re.compile(r"\bTIME\s+MANUFACTURING\b", re.IGNORECASE),
-        "Time Manufacturing Waco",
+        "Time Manufacturing",
     ),
 ]
 
@@ -69,7 +69,7 @@ def detect_organization_from_folder(folder: Path | str | None) -> str | None:
             return org_name
     segs = [s.casefold() for s in _path_segments(folder)]
     if "time" in segs or any("time manufacturing" in s for s in segs):
-        return "Time Manufacturing Waco"
+        return "Time Manufacturing"
     return None
 
 

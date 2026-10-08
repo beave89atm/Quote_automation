@@ -50,9 +50,9 @@ from .qa_harness import evaluate_quote_get
 
 from .api_v2 import (
     discard_quote_created_this_run,
+    organization_id_for_new_quote,
     post_create_quote,
     quote_id_from_create_response,
-    resolve_organization_id,
 )
 from .assembly_ops import (
     ensure_assembly_root,
@@ -66,7 +66,6 @@ from .finalize_ops import finalize_quote_ops
 from .imperial_ops import ensure_imperial_item_units
 from .org_ops import (
     apply_quote_organization,
-    org_empty_guid_is_fail,
     org_guid_matches,
     org_stamp_fail_reason,
     persist_quote_header,
@@ -1614,11 +1613,12 @@ class SecturaFabPushService:
         """
         Create a quote with ``POST /api/v2/quote``.
 
-        When a customer name is set, ``GET /api/v2/organization/lookup`` must
-        return exactly one organization. The body sends that
-        ``OrganizationId`` plus Description and ExternalReference.
-        ``OrganizationName`` and ``LocationName`` are not sent, and
-        ``POST /api/v2/organization`` is not called.
+        Time Waco is ``GET /api/v2/organization/{id}`` for the known id
+        (exact name ``Time Manufacturing``). Any other customer name is
+        one exact ``GET /api/v2/organization/lookup`` parameter. The body
+        sends that ``OrganizationId`` plus Description and ExternalReference.
+        ``OrganizationName`` and ``LocationName`` are not sent. No API
+        version and no website control creates an organization or customer.
 
         CreateQuoteRequestBody has no QuoteNumber. The shop number and the
         editor organization dropdown are still set on the page after the id
@@ -1653,15 +1653,11 @@ class SecturaFabPushService:
         from .page_weld import set_page_quote_description, set_page_quote_number
 
         org_name = str(organization_name or "").strip()
-        org_id = str(organization_id or "").strip()
-        if org_empty_guid_is_fail(org_id):
-            org_id = str(time_waco_org_id_for_name(organization_name) or "").strip()
-        if org_name:
-            org_id = resolve_organization_id(
-                self.client,
-                name=org_name,
-                known_id=org_id or None,
-            )
+        org_id, org_name = organization_id_for_new_quote(
+            self.client,
+            name=org_name,
+            organization_id=organization_id,
+        )
         created_id = ""
         try:
             created = post_create_quote(
@@ -1715,6 +1711,12 @@ class SecturaFabPushService:
                     why = bound.get("why") if isinstance(bound, dict) else "empty"
                     raise SecturaFabApiError(
                         f"OrganizationDetail bind failed ({why}) on {quote_id}."
+                    )
+                bound_id = str(bound.get("org_id") or "").strip()
+                if bound_id.casefold() != str(org_id).casefold():
+                    raise SecturaFabApiError(
+                        f"OrganizationDetail bound {bound_id or '(blank)'} "
+                        f"instead of {org_id} on {quote_id}."
                     )
             try:
                 minted = self.client.get_json(f"v1/quote/{quote_id}")
@@ -7015,7 +7017,7 @@ class SecturaFabPushService:
                 if p
             ]
             # An explicit organization wins over Time / folder detection.
-            # Real Time jobs with no override still detect Time Manufacturing Waco.
+            # Real Time jobs with no override still detect Time Manufacturing.
             if organization_override:
                 organization_name = organization_override
                 notes.append(f"organization_override={organization_name}")

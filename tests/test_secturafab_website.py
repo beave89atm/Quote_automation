@@ -20220,7 +20220,7 @@ def test_finish_cad_files_exec_fail_when_get_org_empty_guid(tmp_path: Path):
             part_key="8679-1",
             explode_polls=1,
             explode_sleep_s=0,
-            organization_name="Time Manufacturing Waco",
+            organization_name="Time Manufacturing",
         )
     blob = " ".join(notes)
     assert STEP_CAD_FINISH_HARD_GATE_EXEC_FAIL in blob

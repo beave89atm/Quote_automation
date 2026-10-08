@@ -46,9 +46,10 @@ class QuoteService:
         """
         Create a quote on ``POST /api/v2/quote``.
 
-        A customer name is resolved to ``OrganizationId`` through
-        ``GET /api/v2/organization/lookup`` first. The body does not send
-        ``OrganizationName`` or ``LocationName``.
+        Time Waco is resolved by ``GET /api/v2/organization/{id}``. Any
+        other customer name is an exact ``GET /api/v2/organization/lookup``.
+        The body does not send ``OrganizationName`` or ``LocationName``.
+        A miss does not create an organization.
         """
         from .api_v2 import create_quote_from_payload
 

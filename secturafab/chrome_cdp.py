@@ -7541,7 +7541,7 @@ def stamp_pdf_kendo_flats(
 _BIND_QUOTE_ORG_JS = """(function(spec) {
   var emptyGuid = "00000000-0000-0000-0000-000000000000";
   var orgId = String((spec && spec.orgId) || "b7dbc294-3fd2-43aa-99be-268a6c4fce14");
-  var orgName = String((spec && spec.orgName) || "Time Manufacturing Waco");
+  var orgName = String((spec && spec.orgName) || "Time Manufacturing");
   function widgetOf($el) {
     if (!$el || !$el.length) return null;
     return $el.data("kendoComboBox") || $el.data("kendoDropDownList")
@@ -7617,7 +7617,7 @@ def bind_quote_organization(
     *,
     quote_id: str,
     org_id: str = "b7dbc294-3fd2-43aa-99be-268a6c4fce14",
-    org_name: str = "Time Manufacturing Waco",
+    org_name: str = "Time Manufacturing",
     base: str | None = None,
 ) -> dict[str, Any]:
     """Quotes UI org bind: set known PrimaryOrganizationID. No autocomplete."""
@@ -7654,16 +7654,54 @@ def bind_quote_organization(
 
 _BIND_ORG_DETAIL_JS = r"""(async function(spec) {
   var orgName = String((spec && spec.orgName) || "").trim();
-  if (!orgName) {
-    return {ok: false, why: "org_name_missing", via: "", search: false, org_id: "", org_name: ""};
+  var wantId = String((spec && spec.orgId) || "").trim();
+  var emptyGuid = "00000000-0000-0000-0000-000000000000";
+  function fail(why, extra) {
+    var out = {
+      ok: false, why: why, via: "", search: why === "org_lookup_miss",
+      org_id: "", org_name: orgName, autocomplete_hits: 0,
+      add_organization_clicked: false,
+      flag: "FLAG: organization '" + orgName + "' " + why +
+        ". Use the exact Sectura organization name. Not creating an organization."
+    };
+    if (extra) {
+      for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) out[k] = extra[k];
+    }
+    return out;
   }
-  if (!window.jQuery) {
-    return {ok: false, why: "no_jquery", via: "", search: false, org_id: "", org_name: orgName};
+  function isCreateControl(text) {
+    return /add\s+organ|create\s+organ|new\s+organ|add\s+customer|create\s+customer/i.test(
+      String(text || "")
+    );
   }
+  function itemText(el) {
+    return String((el && (el.textContent || el.value)) || "").replace(/\s+/g, " ").trim();
+  }
+  function sameName(text) {
+    return itemText({textContent: text}).toLowerCase() === orgName.toLowerCase();
+  }
+  function itemId(el) {
+    if (!el) return "";
+    var id = "";
+    try {
+      if (el.getAttribute) {
+        id = el.getAttribute("data-id") || el.getAttribute("data-organization-id") || "";
+      }
+    } catch (eA) {}
+    if (!id && widget && typeof widget.dataItem === "function") {
+      try {
+        var data = widget.dataItem(el);
+        if (data) {
+          id = data.ID || data.Id || data.OrganizationId || data.OrganizationID || data.id || "";
+        }
+      } catch (eD) {}
+    }
+    return String(id || "").trim();
+  }
+  if (!orgName) return fail("org_name_missing");
+  if (!window.jQuery) return fail("no_jquery");
   var input = jQuery("#Organization_OrganizationName");
-  if (!input.length) {
-    return {ok: false, why: "org_field_missing", via: "", search: false, org_id: "", org_name: orgName};
-  }
+  if (!input.length) return fail("org_field_missing");
   var widget = null;
   try { widget = input.data("kendoAutoComplete"); } catch (eW) { widget = null; }
   var posted = false;
@@ -7680,39 +7718,61 @@ _BIND_ORG_DETAIL_JS = r"""(async function(spec) {
     else input.val(orgName).trigger("input");
   } catch (eS) {}
   var deadline = Date.now() + 4000;
-  var clicked = false;
-  while (!clicked && Date.now() < deadline) {
+  var chosen = null;
+  var sawList = false;
+  while (!chosen && Date.now() < deadline) {
     var items = jQuery(".k-animation-container:visible li, .k-list-container:visible li, ul.k-list li");
-    for (var i = 0; i < items.length; i++) {
-      var text = String(items[i].textContent || "");
-      if (text.toLowerCase().indexOf(orgName.toLowerCase()) >= 0) {
-        items[i].click();
-        clicked = true;
-        break;
-      }
+    var exact = [];
+    if (items && items.length) sawList = true;
+    for (var i = 0; i < (items ? items.length : 0); i++) {
+      var text = itemText(items[i]);
+      if (!text || isCreateControl(text)) continue;
+      if (sameName(text)) exact.push(items[i]);
     }
-    if (!clicked) await new Promise(function(r) { setTimeout(r, 50); });
+    if (exact.length > 1) {
+      jQuery.ajax = orig;
+      return fail("org_lookup_ambiguous", {autocomplete_hits: exact.length, search: false});
+    }
+    if (exact.length === 1) {
+      var gotId = itemId(exact[0]);
+      if (wantId && gotId && gotId.toLowerCase() !== wantId.toLowerCase()) {
+        jQuery.ajax = orig;
+        return fail("org_id_mismatch", {org_id: gotId, autocomplete_hits: 1, search: false});
+      }
+      chosen = exact[0];
+      break;
+    }
+    if (sawList) break;
+    await new Promise(function(r) { setTimeout(r, 50); });
+  }
+  if (!chosen) {
+    jQuery.ajax = orig;
+    return fail("org_lookup_miss");
+  }
+  try { chosen.click(); } catch (eC) {
+    jQuery.ajax = orig;
+    return fail("org_click_failed");
   }
   var postDeadline = Date.now() + 4000;
-  while (clicked && !posted && Date.now() < postDeadline) {
+  while (!posted && Date.now() < postDeadline) {
     await new Promise(function(r) { setTimeout(r, 25); });
   }
   jQuery.ajax = orig;
-  if (!clicked) {
-    return {
-      ok: false, why: "org_lookup_miss", via: "", search: true,
-      org_id: "", org_name: orgName, autocomplete_hits: 0
-    };
-  }
   if (!posted) {
-    return {
-      ok: false, why: "organization_detail_missing", via: "", search: false,
-      org_id: "", org_name: orgName, autocomplete_hits: 0
-    };
+    return fail("organization_detail_missing", {search: false});
+  }
+  var landed = "";
+  try {
+    landed = String(jQuery("#PrimaryOrganizationID").val() || "") || itemId(chosen);
+  } catch (eL) { landed = itemId(chosen); }
+  if (!landed || landed === emptyGuid) landed = itemId(chosen);
+  if (wantId && (!landed || landed.toLowerCase() !== wantId.toLowerCase())) {
+    return fail("org_id_mismatch", {org_id: landed || "", search: false, autocomplete_hits: 1});
   }
   return {
     ok: true, why: "", via: "OrganizationDetail", search: false,
-    org_id: "bound", org_name: orgName, autocomplete_hits: 1
+    org_id: landed || wantId, org_name: orgName, autocomplete_hits: 1,
+    add_organization_clicked: false, flag: ""
   };
 })"""
 
@@ -7753,14 +7813,20 @@ def bind_quote_organization_detail(
     if not isinstance(value, dict):
         empty["why"] = "empty"
         return empty
+    clicked_add = bool(value.get("add_organization_clicked"))
+    why = str(value.get("why") or "")
+    if clicked_add:
+        why = why or "add_organization_clicked"
     return {
-        "ok": bool(value.get("ok")),
+        "ok": bool(value.get("ok")) and not clicked_add,
         "via": str(value.get("via") or ""),
         "org_id": str(value.get("org_id") or ""),
         "org_name": str(value.get("org_name") or name),
         "search": bool(value.get("search")),
         "autocomplete_hits": int(value.get("autocomplete_hits") or 0),
-        "why": str(value.get("why") or ""),
+        "why": why,
+        "flag": str(value.get("flag") or ""),
+        "add_organization_clicked": clicked_add,
     }
 
 
