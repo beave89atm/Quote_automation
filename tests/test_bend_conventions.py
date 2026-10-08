@@ -111,10 +111,10 @@ def test_conflicting_counts_flag_bend_count():
 
 
 def test_compound_bend_is_not_a_single_plane(monkeypatch):
-    from secturafab.flat_pattern import BendChartRow
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("formula hook called before the plane check")
 
-    row = BendChartRow("A36", 0.25, 0.25, 0.25, 2.0, "k", 0.5)
-    monkeypatch.setattr("secturafab.flat_pattern.load_bend_chart", lambda *a, **k: (row,))
+    monkeypatch.setattr("secturafab.flat_pattern.flat_length_in", _boom)
     text = "\n".join(
         [
             "PLATE",
@@ -133,7 +133,7 @@ def test_compound_bend_is_not_a_single_plane(monkeypatch):
             "WIDTH 4.00",
         ]
     )
-    flat = evaluate_formed(text, material="A36", thickness_in=0.25)
+    flat = evaluate_formed(text, thickness_in=0.25)
     assert flat is not None
     assert flat.flag == "bends are not in a single plane"
     assert flat.developed_length_in is None

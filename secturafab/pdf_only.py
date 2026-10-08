@@ -10,11 +10,12 @@ drawing that does not name a family, is flagged and not given a grade.
 
 A flat plate with no bend callouts has bend count 0 and no Bend op.
 A formed part's bend count comes from the conventions library. The flat
-length comes from the press-brake chart (K-factor, allowance, or
-deduction). That flat L×W is what Image Files would stamp. The same count
-has to be written on the Bend operation as ``NumberOfBends``. Nothing
-captured in this repo writes that field, so the push stops before a quote
-is created with ``FLAG: bend count``.
+length comes from ``flat_length_in`` in ``secturafab/flat_formula.py``.
+That function ships unset, so a formed part stops before a quote with
+``FLAG: formed part — flat pattern formula not set``. When the function
+returns a length, Image Files stamps the drawing width and that length,
+and the line note records ``NumberOfBends``. No captured request writes
+that operation field.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from quote_core.config import load_shop_rates
 from quote_core.drawing_title import extract_title_from_pdf_text
 from quote_core.part_materials import _sectura_material_string, parse_material_block
 
-from .bend_op import BEND_COUNT_NOT_SET, BEND_COUNT_WRITE_GAP_NOTE
+from .bend_op import BEND_COUNT_WRITE_GAP_NOTE
 from .flat_pattern import evaluate_formed
 from .item_desc import parse_plate_flats
 from .line_item_ops import parse_cut_length
@@ -59,7 +60,7 @@ class PdfOnlyPlan:
     bend_count: int | None = None
     line_note: str = ""
     operations: tuple[str, ...] = ()
-    flats_from_chart: bool = False
+    flats_from_formula: bool = False
 
 
 def _flag(field: str, detail: str) -> str:
@@ -293,12 +294,11 @@ def plan_pdf_only_part(
         )
 
     def _apply_formed() -> PdfOnlyPlan | None:
-        """Refuse a bend callout, or develop a simple flat from the chart."""
+        """Refuse a bend callout, or stamp a flat the formula returned."""
         if linear and not plate:
             return None
         decision = evaluate_formed(
             f"{text}\n{title}",
-            material=None if grade.blocks else material,
             thickness_in=float(thickness_in) if thickness_in is not None else None,
             drawings=drawings,
         )
@@ -315,25 +315,30 @@ def plan_pdf_only_part(
             )
         if grade.blocks:
             return _blocked_grade()
-        # Flat L×W is computed. NumberOfBends cannot be written, so this
-        # is not gold and no quote is created. Image Files would stamp
-        # decision.width_in × decision.developed_length_in.
+        # Drawing width × formula length. NumberOfBends is the bend count
+        # on the line note. Nothing captured writes that operation field.
+        note = (
+            "PDF-only formed part → Image Files; "
+            f"flat {float(decision.width_in or 0):g} x "
+            f"{float(decision.developed_length_in or 0):g} in; "
+            f"Bend NumberOfBends = {decision.bend_count}"
+        )
         return PdfOnlyPlan(
-            route="refuse",
-            missing=("bend count",),
+            route="image_files",
             description=description,
             material=None if grade.blocks else material,
             thickness_in=float(thickness_in) if thickness_in is not None else None,
             width_in=decision.width_in,
             length_in=decision.developed_length_in,
             bend_count=decision.bend_count,
-            flats_from_chart=True,
+            flats_from_formula=True,
             line_note=decision.line_note,
+            operations=decision.operations,
             notes=_with_grade(
                 grade,
+                note,
                 decision.line_note,
                 BEND_COUNT_WRITE_GAP_NOTE,
-                _flag("bend count", BEND_COUNT_NOT_SET),
             ),
         )
 

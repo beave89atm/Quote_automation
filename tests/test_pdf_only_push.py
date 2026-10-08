@@ -606,25 +606,15 @@ _ONE_BEND = "\n".join(
 )
 
 
-def test_pdf_formed_part_flags_unset_number_of_bends(tmp_path: Path, monkeypatch):
-    """A chart flat is not the line count. NumberOfBends cannot be written."""
-    from secturafab.bend_op import BEND_COUNT_NOT_SET
-    from secturafab.flat_pattern import BendChartRow
+def _stub_flat_length(legs_in, thickness_in, inside_radius_in, bend_count):
+    """Fixture only. Not shop math."""
+    return sum(legs_in) + 0.1 * bend_count
+
+
+def test_pdf_unset_flat_formula_stops_before_quote(tmp_path: Path, monkeypatch):
+    from secturafab.flat_pattern import FORMULA_NOT_SET
 
     _silence_chrome(monkeypatch)
-    row = BendChartRow(
-        material="A36",
-        thickness_in=0.25,
-        inside_radius_in=0.25,
-        punch_radius_in=0.25,
-        die_opening_in=2.0,
-        method="k",
-        value=0.5,
-    )
-    monkeypatch.setattr(
-        "secturafab.flat_pattern.load_bend_chart",
-        lambda *a, **k: (row,),
-    )
     pdf = tmp_path / "73476004.pdf"
     _write_pdf(pdf, _ONE_BEND)
     client = MagicMock()
@@ -654,29 +644,46 @@ def test_pdf_formed_part_flags_unset_number_of_bends(tmp_path: Path, monkeypatch
     upload.assert_not_called()
     finish.assert_not_called()
     linear.assert_not_called()
-    assert result.error == f"FLAG: bend count — {BEND_COUNT_NOT_SET}"
-    blob = " ".join(result.notes or [])
-    assert "drawing bend count 1" in blob
-    assert "K-factor is the flat pattern only" in blob
-    assert "Bend op with Profile; bend count 1" not in blob
+    assert result.error == f"FLAG: formed part — {FORMULA_NOT_SET}"
 
 
-def test_pdf_missing_bend_chart_row_stops_before_quote(tmp_path: Path, monkeypatch):
+def test_pdf_stub_formula_stamps_flat_length_and_bend_count(
+    tmp_path: Path, monkeypatch
+):
+    """Fixture formula only. Legs in, flat length on the Image Files line."""
+    from secturafab.bend_op import BEND_COUNT_WRITE_GAP_NOTE
+
+    seen: dict = {}
+
+    def _stub(legs_in, thickness_in, inside_radius_in, bend_count):
+        seen["args"] = (legs_in, thickness_in, inside_radius_in, bend_count)
+        return _stub_flat_length(
+            legs_in, thickness_in, inside_radius_in, bend_count
+        )
+
+    monkeypatch.setattr("secturafab.flat_pattern.flat_length_in", _stub)
     _silence_chrome(monkeypatch)
     pdf = tmp_path / "73476004.pdf"
     _write_pdf(pdf, _ONE_BEND)
     client = MagicMock()
-    client.config.website_cookie = "ASP.NET_SessionId=test"
-    service = SecturaFabPushService(client=client)
-    with patch.object(service, "create_quote", return_value="qid") as create_q, patch.object(
-        service, "upload_drawings_quote_request", return_value="qr"
-    ) as upload, patch.object(
-        service, "finish_pdf_files"
-    ) as finish, patch.object(
-        service, "add_loose_linears"
-    ) as linear, patch(
-        "secturafab.push.refresh_bom_rows_for_push", return_value=([], [])
-    ):
+    client.upload_pdf_via_page_add_files.return_value = plate_upload_bound()
+    client.stamp_pdf_kendo_flats.return_value = plate_perimeter_stamp()
+    client.add_item_pdf_files.return_value = plate_gold_finish_response()
+    client.quote_item_read.return_value = {}
+    client.quote_item_read_treelist.return_value = {}
+    gold = {
+        "QuoteNumber": "73476004",
+        "Description": "FORMED BRACKET",
+        "ItemCount": 1,
+        "ItemList": [plate_gold_line("FORMED BRACKET")],
+        **_ORG,
+    }
+    client.get_json.side_effect = _quote_gets(gold)
+    service = _service(client)
+    patches = _common_patches(service, "FORMED BRACKET")
+    for item in patches:
+        item.start()
+    try:
         result = service.push_job(
             title="FORMED BRACKET",
             pdf_filename="73476004.pdf",
@@ -687,14 +694,25 @@ def test_pdf_missing_bend_chart_row_stops_before_quote(tmp_path: Path, monkeypat
             job_id=9,
             organization="Safe Cave",
         )
-    assert result.ok is False
-    create_q.assert_not_called()
-    upload.assert_not_called()
-    finish.assert_not_called()
-    linear.assert_not_called()
-    assert result.error is not None
-    assert result.error.startswith("FLAG: formed part — ")
-    assert "no press brake chart row" in result.error
+    finally:
+        for item in reversed(patches):
+            item.stop()
+
+    assert result.ok is True, (result.error, result.notes)
+    assert seen["args"] == ((2.0, 3.0), 0.25, 0.25, 1)
+    client.add_item_pdf_files.assert_called()
+    stamped = client.stamp_pdf_kendo_flats.call_args.kwargs["rows"][0]
+    assert float(stamped["Width"]) == pytest.approx(6.0)
+    assert float(stamped["Length"]) == pytest.approx(5.1)
+    notes = stamped.get("Notes") or ""
+    assert "legs 2, 3 in" in notes
+    assert "flat length 5.1 in" in notes
+    assert "width 6 in from the drawing" in notes
+    assert "Bend NumberOfBends = 1" in notes
+    blob = " ".join(result.notes or [])
+    assert "Bend op with Profile; bend count 1" in blob
+    assert BEND_COUNT_WRITE_GAP_NOTE in blob
+    assert "flat length 5.1 in" in blob
 
 
 def _no_hole_zero_contour_finish() -> dict:

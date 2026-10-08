@@ -1,20 +1,17 @@
-"""PDF-only bend callouts and a flat-pattern calculator.
+"""PDF-only bend callouts and the flat-pattern formula hook.
 
-The bend count comes from ``quote_core/bend_conventions.yaml``. The
-K-factor (or bend allowance / deduction) comes only from
-``config/press_brake_bends.csv`` and is used for the flat length, not as
-the count. Any number of 90° bends in one plane can be developed when the
-legs and radius are dimensioned. The chart ships with no data rows.
-There is no K-factor default.
+The bend count comes from ``quote_core/bend_conventions.yaml``. The flat
+length comes only from ``secturafab/flat_formula.py`` (``flat_length_in``).
+That function ships unset. There is no K-factor default and no fallback
+math. The flat width is the drawing width.
 """
 
 from __future__ import annotations
 
-import csv
-import math
 import re
 from dataclasses import dataclass
-from pathlib import Path
+
+from .flat_formula import flat_length_in
 
 
 @dataclass(frozen=True)
@@ -36,8 +33,6 @@ class BendRead:
     legs_in: tuple[float, ...] = ()
     width_in: float | None = None
     view_count: int = 0
-    punch_radius_in: float | None = None
-    die_opening_in: float | None = None
     count_flag: str | None = None
     count_source: str = ""
     citations: tuple[str, ...] = ()
@@ -75,14 +70,6 @@ _RADIUS_RES = (
         r"(?i)\bIR\s*[:=]?\s*"
         r"([0-9]+(?:\s*[- ]\s*[0-9]+\s*/\s*[0-9]+|\s*/\s*[0-9]+|\.\d+)?)"
     ),
-)
-_PUNCH_RE = re.compile(
-    r"(?i)\bPUNCH(?:\s+RADIUS)?\s+"
-    r"([0-9]+(?:\s*[- ]\s*[0-9]+\s*/\s*[0-9]+|\s*/\s*[0-9]+|\.\d+)?)"
-)
-_DIE_RE = re.compile(
-    r"(?i)\bDIE(?:\s+OPENING)?\s+"
-    r"([0-9]+(?:\s*[- ]\s*[0-9]+\s*/\s*[0-9]+|\s*/\s*[0-9]+|\.\d+)?)"
 )
 _CONVENTION_RES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("inside", re.compile(r"(?i)\bDIMENSIONS?\s+INSIDE\b|\bINSIDE\s+DIMENSIONS?\b")),
@@ -193,18 +180,6 @@ def read_bends(text: str, drawings: list | None = None) -> BendRead:
     width, width_ambiguous = _unique_inches(widths)
     if width_ambiguous:
         width = None
-    punches = [
-        value
-        for match in _PUNCH_RE.finditer(blob)
-        if (value := _inches(match.group(1))) is not None
-    ]
-    dies = [
-        value
-        for match in _DIE_RE.finditer(blob)
-        if (value := _inches(match.group(1))) is not None
-    ]
-    punch, _punch_ambiguous = _unique_inches(punches)
-    die, _die_ambiguous = _unique_inches(dies)
     hem = bool(_HEM_RE.search(blob))
     offset = bool(_OFFSET_RE.search(blob))
     formed_word = bool(_FORMED_RE.search(blob))
@@ -248,8 +223,6 @@ def read_bends(text: str, drawings: list | None = None) -> BendRead:
         legs_in=legs,
         width_in=width,
         view_count=view_count,
-        punch_radius_in=punch,
-        die_opening_in=die,
         count_flag=counted.flag,
         count_source=counted.source,
         citations=citations,
@@ -257,17 +230,7 @@ def read_bends(text: str, drawings: list | None = None) -> BendRead:
     )
 
 
-@dataclass(frozen=True)
-class BendChartRow:
-    """One press-brake chart row. Values come from the shop file, not from guesses."""
-
-    material: str
-    thickness_in: float
-    inside_radius_in: float
-    punch_radius_in: float
-    die_opening_in: float
-    method: str
-    value: float
+FORMULA_NOT_SET = "flat pattern formula not set"
 
 
 @dataclass(frozen=True)
@@ -279,121 +242,8 @@ class FlatPattern:
     developed_length_in: float | None = None
     width_in: float | None = None
     bend_count: int | None = None
-    bend_allowance_in: float | None = None
-    bend_deduction_in: float | None = None
     line_note: str = ""
     operations: tuple[str, ...] = ()
-
-
-CHART_COLUMNS = (
-    "material",
-    "thickness_in",
-    "inside_radius_in",
-    "punch_radius_in",
-    "die_opening_in",
-    "method",
-    "value",
-)
-CHART_METHODS = ("k", "ba", "bd")
-CHART_NAME = "config/press_brake_bends.csv"
-
-
-def chart_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "config" / "press_brake_bends.csv"
-
-
-def load_bend_chart(path: Path | None = None) -> tuple[BendChartRow, ...]:
-    """Data rows only. Blank lines and ``#`` comments are never chart data."""
-    src = path or chart_path()
-    if not src.is_file():
-        return ()
-    rows: list[BendChartRow] = []
-    header: list[str] | None = None
-    with src.open(newline="", encoding="utf-8") as handle:
-        for raw in handle:
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            cells = [cell.strip() for cell in next(csv.reader([line]))]
-            if header is None:
-                header = cells
-                continue
-            if header != list(CHART_COLUMNS) or len(cells) != len(CHART_COLUMNS):
-                continue
-            material, thickness, radius, punch, die, method, value = cells
-            method_name = method.casefold()
-            if method_name not in CHART_METHODS or not material:
-                continue
-            try:
-                row = BendChartRow(
-                    material=material,
-                    thickness_in=float(thickness),
-                    inside_radius_in=float(radius),
-                    punch_radius_in=float(punch),
-                    die_opening_in=float(die),
-                    method=method_name,
-                    value=float(value),
-                )
-            except ValueError:
-                continue
-            if row.thickness_in <= 0 or row.inside_radius_in < 0 or row.value <= 0:
-                continue
-            rows.append(row)
-    if header != list(CHART_COLUMNS):
-        return ()
-    return tuple(rows)
-
-
-def _norm_material(value: str | None) -> str:
-    return " ".join(str(value or "").casefold().split())
-
-
-def matching_bend_rows(
-    rows: tuple[BendChartRow, ...] | list[BendChartRow],
-    *,
-    material: str | None,
-    thickness_in: float,
-    inside_radius_in: float,
-    punch_radius_in: float | None = None,
-    die_opening_in: float | None = None,
-) -> tuple[BendChartRow, ...]:
-    """Chart rows for this material, thickness, radius, and any stated tooling."""
-    want = _norm_material(material)
-    if not want:
-        return ()
-    found: list[BendChartRow] = []
-    for row in rows:
-        if _norm_material(row.material) != want:
-            continue
-        if abs(row.thickness_in - thickness_in) > 0.0005:
-            continue
-        if abs(row.inside_radius_in - inside_radius_in) > 0.0005:
-            continue
-        if punch_radius_in is not None and abs(row.punch_radius_in - punch_radius_in) > 0.0005:
-            continue
-        if die_opening_in is not None and abs(row.die_opening_in - die_opening_in) > 0.0005:
-            continue
-        found.append(row)
-    return tuple(found)
-
-
-def allowance_and_deduction(
-    row: BendChartRow,
-    *,
-    thickness_in: float,
-    inside_radius_in: float,
-) -> tuple[float, float]:
-    """90° bend allowance and bend deduction from a chart row. No default K."""
-    if row.method == "k":
-        allowance = (math.pi / 2.0) * (inside_radius_in + row.value * thickness_in)
-        deduction = 2.0 * (inside_radius_in + thickness_in) - allowance
-    elif row.method == "ba":
-        allowance = row.value
-        deduction = 2.0 * (inside_radius_in + thickness_in) - allowance
-    else:
-        deduction = row.value
-        allowance = 2.0 * (inside_radius_in + thickness_in) - deduction
-    return allowance, deduction
 
 
 def _specifies_bend(read: BendRead) -> bool:
@@ -447,7 +297,7 @@ def _blocking_reason(read: BendRead) -> str | None:
     return None
 
 
-def _ready_for_chart(read: BendRead) -> bool:
+def _ready_for_formula(read: BendRead) -> bool:
     if read.bend_count is None or read.bend_count < 1:
         return False
     if not read.angles or any(abs(angle - 90.0) > 0.01 for angle in read.angles):
@@ -457,69 +307,49 @@ def _ready_for_chart(read: BendRead) -> bool:
     return True
 
 
-def _developed_length(
-    read: BendRead,
-    *,
-    allowance: float,
-    deduction: float,
-) -> float:
-    legs = sum(read.legs_in)
-    count = int(read.bend_count or 0)
-    if read.conventions == ("inside",):
-        return legs + allowance * count
-    return legs - deduction * count
-
-
 def _line_note(
     read: BendRead,
-    row: BendChartRow,
     *,
     thickness_in: float,
-    allowance: float,
-    deduction: float,
     developed: float,
 ) -> str:
     legs = ", ".join(f"{leg:g}" for leg in read.legs_in)
+    cites = ", ".join(read.citations) or read.count_source
     return (
         "flat pattern: "
         f"legs {legs} in; "
         f"convention {read.conventions[0]}; "
         f"thickness {thickness_in:g} in; "
         f"inside radius {read.radius_in:g} in; "
-        f"bend allowance {allowance:.6g} in; "
-        f"bend deduction {deduction:.6g} in; "
-        f"source {CHART_NAME} "
-        f"material={row.material} "
-        f"thickness_in={row.thickness_in:g} "
-        f"inside_radius_in={row.inside_radius_in:g} "
-        f"punch_radius_in={row.punch_radius_in:g} "
-        f"die_opening_in={row.die_opening_in:g} "
-        f"method={row.method} "
-        f"value={row.value:g}; "
-        f"developed length {developed:.6g} in; "
-        f"width {read.width_in:g} in; "
-        f"drawing bend count {read.bend_count} "
-        f"({', '.join(read.citations) or read.count_source}); "
-        "K-factor is the flat pattern only; "
-        "NumberOfBends must equal this count"
+        f"bend count {read.bend_count}; "
+        f"flat length {developed:.6g} in; "
+        f"width {read.width_in:g} in from the drawing; "
+        f"Bend NumberOfBends = {read.bend_count} "
+        f"({cites})"
     )
+
+
+def _positive_length(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    length = float(value)
+    if length <= 0 or length != length or length == float("inf"):
+        return None
+    return length
 
 
 def evaluate_formed(
     text: str,
     *,
-    material: str | None,
     thickness_in: float | None,
-    chart: tuple[BendChartRow, ...] | list[BendChartRow] | None = None,
     drawings: list | None = None,
 ) -> FlatPattern | None:
     """None when the drawing is a flat plate. Otherwise a flag or a developed flat.
 
-    Flat length is the sum of the legs plus one bend allowance per bend
-    (inside dimensions) or minus one bend deduction per bend (outside or
-    mold-line). Mold-line means the outside mold line. The allowance or
-    deduction comes only from a chart row. The bend count is not limited
-    to two; the bends have to be 90° and in one plane.
+    Hems, offsets, non-90° bends, a missing or ambiguous radius, an
+    ambiguous dimension convention, and bends that are not in one plane
+    are flagged before ``flat_length_in`` is called. The flat length is
+    whatever that function returns. The width is the drawing width.
     """
     read = read_bends(text, drawings)
     if read.hem:
@@ -537,7 +367,7 @@ def evaluate_formed(
     blocked = _blocking_reason(read)
     if blocked:
         return FlatPattern(flag=blocked)
-    if not _ready_for_chart(read):
+    if not _ready_for_formula(read):
         return FlatPattern(
             flag=(
                 f"bend callout ({_callout_label(read)}); "
@@ -549,53 +379,25 @@ def evaluate_formed(
     if read.width_in is None:
         return FlatPattern(flag="width along the bend was not on the drawing")
     if thickness_in is None:
-        return FlatPattern(flag="thickness was not on the drawing; no bend chart lookup")
-    rows = tuple(chart) if chart is not None else load_bend_chart()
-    found = matching_bend_rows(
-        rows,
-        material=material,
-        thickness_in=float(thickness_in),
-        inside_radius_in=float(read.radius_in or 0),
-        punch_radius_in=read.punch_radius_in,
-        die_opening_in=read.die_opening_in,
+        return FlatPattern(flag="thickness was not on the drawing")
+    raw = flat_length_in(
+        read.legs_in,
+        float(thickness_in),
+        float(read.radius_in or 0),
+        int(read.bend_count or 0),
     )
-    shown = material or "this material"
-    if len(found) > 1:
-        return FlatPattern(
-            flag=(
-                f"more than one press brake chart row for {shown} at "
-                f"{float(thickness_in):g} in, inside radius "
-                f"{float(read.radius_in or 0):g} in; not picking a tooling row"
-            )
-        )
-    if not found:
-        return FlatPattern(
-            flag=(
-                f"no press brake chart row for {shown} at {float(thickness_in):g} in, "
-                f"inside radius {float(read.radius_in or 0):g} in"
-            )
-        )
-    row = found[0]
-    allowance, deduction = allowance_and_deduction(
-        row,
-        thickness_in=float(thickness_in),
-        inside_radius_in=float(read.radius_in or 0),
-    )
-    developed = _developed_length(read, allowance=allowance, deduction=deduction)
-    if developed <= 0 or read.width_in <= 0:
+    if raw is None:
+        return FlatPattern(flag=FORMULA_NOT_SET)
+    developed = _positive_length(raw)
+    if developed is None:
         return FlatPattern(flag="flat length is not positive; not inventing a flat")
     return FlatPattern(
         developed_length_in=developed,
         width_in=float(read.width_in),
         bend_count=int(read.bend_count or 0),
-        bend_allowance_in=allowance,
-        bend_deduction_in=deduction,
         line_note=_line_note(
             read,
-            row,
             thickness_in=float(thickness_in),
-            allowance=allowance,
-            deduction=deduction,
             developed=developed,
         ),
         operations=("Profile", "Bend"),
@@ -604,7 +406,7 @@ def evaluate_formed(
 
 def formed_flag(text: str) -> str | None:
     """Reason after ``FLAG: formed part —``, or None when the part is flat."""
-    decision = evaluate_formed(text, material=None, thickness_in=None)
+    decision = evaluate_formed(text, thickness_in=None)
     if decision is None:
         return None
     return decision.flag

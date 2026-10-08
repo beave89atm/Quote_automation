@@ -2,7 +2,7 @@
 
 The detector loads `quote_core/bend_conventions.yaml`. Each bend it accepts cites the convention id that matched. High-confidence signals can set the count. Medium signals count only when they agree with that count. Low-confidence signals and conflicts stop the quote with `FLAG: bend count — <reason>`. Nothing is guessed.
 
-The K-factor chart (`config/press_brake_bends.csv`) is not a bend count. It only develops the flat length after the count is known.
+The flat length is not a bend count. It comes from `flat_length_in` in `secturafab/flat_formula.py`. That function ships unset. Until it returns a length, a formed part stops with `FLAG: formed part — flat pattern formula not set`.
 
 ## What is text-only
 
