@@ -12,13 +12,14 @@ SecturaFAB client code remains in `secturafab/` for a later integration phase.
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-### 2. Shop rates
+### 2. Shop rates and password
 
 Edit [`config/shop_rates.yaml`](config/shop_rates.yaml) (see [`config/README.md`](config/README.md)):
-- Shared app password (default `kannon`)
 - Weld IPM by size
 - Fit-up factors (with / without fixture)
 - Default efficiency %
+
+The staff login password is the `QUOTE_APP_PASSWORD` environment variable (see [`.env.example`](.env.example)). It is not stored in `shop_rates.yaml`. On startup the server loads a local `.env` and does not override a password already set in the environment. If that variable is unset or blank, logins are refused.
 
 ### 3. Frontend
 
@@ -36,7 +37,7 @@ npm run build
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Open http://localhost:8000 — password from `shop_rates.yaml`.
+Open http://localhost:8000 — sign in with `QUOTE_APP_PASSWORD`.
 
 ### Dev UI (hot reload)
 

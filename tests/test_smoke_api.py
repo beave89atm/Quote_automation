@@ -30,11 +30,16 @@ def _reload_app_modules() -> None:
             importlib.import_module(mod_name)
 
 
+_TEST_PASSWORD = "test-quote-password"
+
+
 @pytest.fixture(scope="module")
 def client(tmp_path_factory: pytest.TempPathFactory):
     data_dir = tmp_path_factory.mktemp("kannon_smoke")
     previous = os.environ.get("KANNON_DATA_DIR")
+    previous_password = os.environ.get("QUOTE_APP_PASSWORD")
     os.environ["KANNON_DATA_DIR"] = str(data_dir)
+    os.environ["QUOTE_APP_PASSWORD"] = _TEST_PASSWORD
     _reload_app_modules()
 
     from app.main import app
@@ -46,22 +51,20 @@ def client(tmp_path_factory: pytest.TempPathFactory):
         os.environ.pop("KANNON_DATA_DIR", None)
     else:
         os.environ["KANNON_DATA_DIR"] = previous
+    if previous_password is None:
+        os.environ.pop("QUOTE_APP_PASSWORD", None)
+    else:
+        os.environ["QUOTE_APP_PASSWORD"] = previous_password
     _reload_app_modules()
 
 
 @pytest.fixture(scope="module")
 def password(client: TestClient) -> str:
-    from app.paths import RATES_PATH
-    from quote_core.config import load_shop_rates
-
-    rates = load_shop_rates(RATES_PATH)
-    return rates.shared_password or ""
+    return _TEST_PASSWORD
 
 
 @pytest.fixture(scope="module")
 def token(client: TestClient, password: str) -> str:
-    if not password:
-        pytest.skip("shared_password empty — auth gate disabled")
     res = client.post("/api/login", json={"password": password})
     assert res.status_code == 200, res.text
     body = res.json()
@@ -76,21 +79,15 @@ def test_health(client: TestClient) -> None:
 
 
 def test_login(client: TestClient, password: str) -> None:
-    if not password:
-        res = client.post("/api/login", json={"password": ""})
-        assert res.status_code == 200
-        assert res.json().get("token")
-        return
     res = client.post("/api/login", json={"password": password})
     assert res.status_code == 200
     body = res.json()
     assert body.get("token")
+    assert body.get("auth_required") is True
     assert "default_efficiency_pct" in body
 
 
-def test_rates_requires_auth(client: TestClient, password: str) -> None:
-    if not password:
-        pytest.skip("auth disabled")
+def test_rates_requires_auth(client: TestClient) -> None:
     res = client.get("/api/rates")
     assert res.status_code == 401
 

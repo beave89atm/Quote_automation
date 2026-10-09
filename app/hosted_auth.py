@@ -305,14 +305,13 @@ def new_session_token() -> tuple[str, str, datetime]:
 
 
 def check_local_password(password: str) -> bool:
-    from quote_core.config import load_shop_rates
+    from .auth import quote_app_password, warn_if_quote_password_missing
 
-    from .paths import RATES_PATH
-
-    expected = load_shop_rates(RATES_PATH).shared_password or ""
+    expected = quote_app_password()
     if not expected:
+        warn_if_quote_password_missing()
         return False
-    return secrets.compare_digest(password, expected)
+    return secrets.compare_digest(password or "", expected)
 
 
 def require_worker(

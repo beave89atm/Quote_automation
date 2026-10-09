@@ -62,7 +62,6 @@ class FitupConfig:
 
 @dataclass
 class ShopRates:
-    shared_password: str = ""
     default_efficiency_pct: float = 85.0
     weld_process: str = "manual"  # manual | robot (robot rates TBD)
     weld_ipm: dict[str, float] = field(default_factory=dict)
@@ -118,7 +117,12 @@ def load_shop_rates(path: Path | str | None = None) -> ShopRates:
     with rates_path.open(encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
 
-    app = raw.get("app") or {}
+    # Staff password is QUOTE_APP_PASSWORD, never this file. Drop a leftover key
+    # so it cannot ride along on ShopRates.raw.
+    raw = dict(raw)
+    app = dict(raw.get("app") or {})
+    app.pop("shared_password", None)
+    raw["app"] = app
     weld = raw.get("weld") or {}
     ipm = {str(k): float(v) for k, v in (weld.get("ipm") or {}).items()}
     materials = raw.get("materials") or {}
@@ -129,7 +133,6 @@ def load_shop_rates(path: Path | str | None = None) -> ShopRates:
         k_factor = float(materials["flat_pattern_k_factor"])
 
     return ShopRates(
-        shared_password=str(app.get("shared_password") or ""),
         default_efficiency_pct=float(app.get("default_efficiency_pct", 85)),
         weld_process=str(weld.get("process") or "manual"),
         weld_ipm=ipm,
