@@ -28,23 +28,14 @@ from .website import (
 )
 
 
-def _forbid_write_payload(json_body: Any, data: Any) -> Any:
-    """Quote ID for the forbid check — form POSTs send ID in data, not json."""
-    if isinstance(json_body, dict):
-        return json_body
-    if isinstance(data, dict):
-        return data
-    if isinstance(data, (list, tuple)):
-        out: dict[str, Any] = {}
-        for item in data:
-            if not isinstance(item, (list, tuple)) or len(item) < 2:
-                continue
-            key = str(item[0])
-            if key in {"ID", "QuoteID"} and item[1] not in (None, ""):
-                out[key] = item[1]
-        if out:
-            return out
-    return json_body
+def _forbid_write_payload(json_body: Any, data: Any, extra: Any = None) -> Any:
+    """Bodies the forbid scan must see, including list updates and form pairs."""
+    bodies = [body for body in (json_body, data, extra) if body is not None]
+    if not bodies:
+        return None
+    if len(bodies) == 1:
+        return bodies[0]
+    return bodies
 
 
 class SecturaFabApiError(RuntimeError):
@@ -124,6 +115,7 @@ class SecturaFabClient:
                 method=method,
                 path=path,
                 payload=_forbid_write_payload(json, data),
+                params=params,
             )
         except ForbiddenQuoteError as exc:
             raise SecturaFabApiError(str(exc)) from exc
@@ -215,6 +207,15 @@ class SecturaFabClient:
         `files` entries are requests-style:
           ("files", (filename, fileobj, content_type))
         """
+        try:
+            refuse_forbidden_quote_write(
+                method="POST",
+                path=path,
+                payload=files,
+                params=params,
+            )
+        except ForbiddenQuoteError as exc:
+            raise SecturaFabApiError(str(exc)) from exc
         token = self.authenticate()
         url = f"{self.config.api_root}/{path.lstrip('/')}"
         req_headers = {
@@ -351,7 +352,8 @@ class SecturaFabClient:
             refuse_forbidden_quote_write(
                 method=method,
                 path=path,
-                payload=_forbid_write_payload(json, data),
+                payload=_forbid_write_payload(json, data, files),
+                params=params,
             )
         except ForbiddenQuoteError as exc:
             raise SecturaFabApiError(str(exc)) from exc
@@ -1096,9 +1098,17 @@ class SecturaFabClient:
         Live 34137-1: cookie-HTTP 200 often empty str (wrong claims user).
         Quotes-tab fetch when chrome_dom is live. Do not skip classify.
         """
+        body = self._cadimport_json_body(payload)
+        try:
+            refuse_forbidden_quote_write(
+                method="POST",
+                path=WEBSITE_FINISH_PATHS["cadimport_update_data"],
+                payload=body,
+            )
+        except ForbiddenQuoteError as exc:
+            raise SecturaFabApiError(str(exc)) from exc
         from .chrome_cdp import chrome_quotes_live, post_update_data_from_quotes_tab
 
-        body = self._cadimport_json_body(payload)
         if chrome_quotes_live() and getattr(self, "_af_source", "") == "chrome_dom":
             result = post_update_data_from_quotes_tab(body)
             if not result.get("has_antiforgery"):
@@ -1163,11 +1173,19 @@ class SecturaFabClient:
         QuoteOrderEdit: data:{ID, PartMode}. Live 34137-1 cookie-HTTP 200
         empty str — Quotes-tab fetch when chrome_dom is live.
         """
-        from .chrome_cdp import chrome_quotes_live, post_set_part_mode_from_quotes_tab
-
         params: dict[str, Any] = {"ID": row_id, "PartMode": int(part_mode)}
         if extra:
             params.update(extra)
+        try:
+            refuse_forbidden_quote_write(
+                method="POST",
+                path=WEBSITE_FINISH_PATHS["cadimport_set_part_mode"],
+                params=params,
+            )
+        except ForbiddenQuoteError as exc:
+            raise SecturaFabApiError(str(exc)) from exc
+        from .chrome_cdp import chrome_quotes_live, post_set_part_mode_from_quotes_tab
+
         if chrome_quotes_live() and getattr(self, "_af_source", "") == "chrome_dom":
             result = post_set_part_mode_from_quotes_tab(
                 row_id=str(row_id), part_mode=int(part_mode)
@@ -1225,6 +1243,14 @@ class SecturaFabClient:
 
         want = str(item_type or UPDATE_ITEM_TYPE_CAD)
         params = update_item_type_fields(row_id, want)
+        try:
+            refuse_forbidden_quote_write(
+                method="POST",
+                path=WEBSITE_FINISH_PATHS["part_update_item_type"],
+                params=params,
+            )
+        except ForbiddenQuoteError as exc:
+            raise SecturaFabApiError(str(exc)) from exc
         if chrome_quotes_live() and getattr(self, "_af_source", "") == "chrome_dom":
             result = post_update_item_type_from_quotes_tab(
                 row_id=str(row_id), item_type=want
@@ -1305,6 +1331,18 @@ class SecturaFabClient:
         is missing, List=0, or #gridDXFParts is missing/empty (34632-2).
         Bind and Finish a 1-row Cad piece-part (live 11796-1).
         """
+        try:
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/part/create",
+                payload={
+                    "ID": quote_id,
+                    "QuoteNumber": quote_number,
+                    "id_list": id_list,
+                },
+            )
+        except ForbiddenQuoteError as exc:
+            raise SecturaFabApiError(str(exc)) from exc
         from .cadimport_js import (
             build_create_dxf_parts_fields,
             jquery_ajax_form,
@@ -1492,6 +1530,14 @@ class SecturaFabClient:
         28768-1: empty InternalData after explode is refuse-before-Finish
         (page OnAddDXFClick alone lands GET 0 Cad).
         """
+        try:
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/Quote/AddItem_DXFFiles",
+                payload={"ID": quote_id, "FileList": file_list},
+            )
+        except ForbiddenQuoteError as exc:
+            raise SecturaFabApiError(str(exc)) from exc
         from .chrome_cdp import (
             chrome_quotes_live,
             grid_dxf_count_is_stale,
@@ -1717,6 +1763,14 @@ class SecturaFabClient:
         FileList must be the page PDF kendo (GetPDFData / #gridPDF) rows
         with Status>0. Do not POST a Python-built FileList.
         """
+        try:
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/Quote/AddItem_PDFFiles",
+                payload={"ID": quote_id, "FileList": file_list},
+            )
+        except ForbiddenQuoteError as exc:
+            raise SecturaFabApiError(str(exc)) from exc
         from .browser_session import effective_website_cookie
         from .chrome_cdp import (
             chrome_quotes_live,
@@ -1924,6 +1978,14 @@ class SecturaFabClient:
         Gold Saw + Saw-Setup pack is List[0] from the page New Line Item.
         Internal stays empty. ItemID empty for new rows.
         """
+        try:
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="/Quote/AddItem_Linear",
+                payload={"ID": quote_id, "extra": extra, "name": name},
+            )
+        except ForbiddenQuoteError as exc:
+            raise SecturaFabApiError(str(exc)) from exc
         from .browser_session import effective_website_cookie
         from .chrome_cdp import (
             chrome_quotes_live,
@@ -2318,6 +2380,11 @@ class SecturaFabClient:
         feature_type: str = "Internal",
     ) -> Any:
         """POST /Quote/AddFeature — Internal hole on a Cad plate."""
+        refuse_forbidden_quote_write(
+            method="POST",
+            path=WEBSITE_FINISH_PATHS["add_feature"],
+            payload={"ID": quote_id, "item_id": item_id},
+        )
         from .browser_session import effective_website_cookie
         from .chrome_cdp import chrome_quotes_live, page_jquery_ajax
 
@@ -2328,11 +2395,6 @@ class SecturaFabClient:
             live = False
         if not effective_website_cookie(self.config) and not live:
             raise SecturaFabWebsiteAuthError(WEBSITE_AUTH_GAP)
-        refuse_forbidden_quote_write(
-            method="POST",
-            path=WEBSITE_FINISH_PATHS["add_feature"],
-            payload={"ID": quote_id},
-        )
         payload = build_add_feature_payload(
             quote_id,
             item_id,
@@ -2413,6 +2475,11 @@ class SecturaFabClient:
         if extra:
             payload.update(extra)
         path = WEBSITE_FINISH_PATHS["renest_linear"]
+        refuse_forbidden_quote_write(
+            method="POST",
+            path=path,
+            payload=payload,
+        )
         live = False
         try:
             live = bool(chrome_quotes_live())

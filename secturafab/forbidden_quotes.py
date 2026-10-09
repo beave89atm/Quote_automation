@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Kyle-confirmed + leftover + human Time quotes. Create NEW quotes only.
@@ -508,12 +509,30 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
 )
 
 
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_UUID_SEARCH_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+_HEX8_RE = re.compile(r"^[0-9a-f]{8}$")
+_URL_SPLIT_RE = re.compile(r"[/?&#=\s]+")
+
+
+def _id_shaped(raw: str) -> bool:
+    """True for a UUID or a bare 8-hex prefix token, not surrounding prose."""
+    return bool(_UUID_RE.fullmatch(raw) or _HEX8_RE.fullmatch(raw))
+
+
 def is_forbidden_quote_id(quote_id: str | None) -> bool:
     raw = str(quote_id or "").strip().casefold()
     if not raw:
         return False
     if raw in {x.casefold() for x in FORBIDDEN_LIVE_QUOTE_IDS}:
         return True
+    if not _id_shaped(raw):
+        return False
     return any(raw.startswith(p.casefold()) for p in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES)
 
 
@@ -551,34 +570,111 @@ def spent_quote_number_block_reason(
     return None
 
 
+def _forbidden_numbers_re() -> re.Pattern[str]:
+    parts = sorted(
+        (re.escape(number.casefold()) for number in FORBIDDEN_LIVE_QUOTE_NUMBERS),
+        key=len,
+        reverse=True,
+    )
+    return re.compile(
+        r"(?<![a-z0-9.])(" + "|".join(parts) + r")(?![a-z0-9.])",
+        re.IGNORECASE,
+    )
+
+
+_FORBIDDEN_NUMBERS_RE = _forbidden_numbers_re()
+
+
+def _quote_number_hit(text: str) -> str | None:
+    raw = text.strip()
+    if not raw:
+        return None
+    if is_forbidden_quote_number(raw):
+        return raw
+    match = _FORBIDDEN_NUMBERS_RE.search(raw.casefold())
+    if match:
+        return match.group(1)
+    return None
+
+
+def _string_hit(text: str, *, url_tokens: bool) -> str | None:
+    """Forbidden id or quote number in one string.
+
+    A prefix matches only an id-shaped value (UUID or bare 8-hex token),
+    including a UUID embedded in a URL. It does not match prose that merely
+    starts with or contains those characters.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    if is_forbidden_quote_id(raw):
+        return raw
+    for found in _UUID_SEARCH_RE.finditer(raw):
+        token = found.group(0)
+        if is_forbidden_quote_id(token):
+            return token
+    number = _quote_number_hit(raw)
+    if number:
+        return number
+    if not url_tokens:
+        return None
+    for token in _URL_SPLIT_RE.split(raw):
+        piece = token.strip()
+        if not piece or piece == raw:
+            continue
+        if is_forbidden_quote_id(piece) or is_forbidden_quote_number(piece):
+            return piece
+    return None
+
+
+def _walk_hit(obj: Any, *, url_tokens: bool = False, depth: int = 0) -> str | None:
+    if depth > 32 or obj is None:
+        return None
+    if isinstance(obj, str):
+        return _string_hit(obj, url_tokens=url_tokens)
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        return None
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str):
+                hit = _string_hit(key, url_tokens=False)
+                if hit:
+                    return hit
+            hit = _walk_hit(value, depth=depth + 1)
+            if hit:
+                return hit
+        return None
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            hit = _walk_hit(item, depth=depth + 1)
+            if hit:
+                return hit
+        return None
+    return None
+
+
 def refuse_forbidden_quote_write(
     *,
     method: str,
     path: str,
     payload: Any = None,
+    params: Any = None,
 ) -> None:
-    """Raise if a write would PATCH/reuse a forbidden live quote.
+    """Raise if a write would PATCH, remint, or delete a forbidden live quote.
 
-    GET is allowed. New quotes with an unused job PN are allowed. A forbidden
-    QuoteNumber is refused even without ID so create mint cannot stamp kids first.
+    GET, HEAD, and OPTIONS are allowed. POST, PUT, PATCH, DELETE, and multipart
+    are refused when a forbidden quote id, id-shaped prefix, or quote number
+    appears in the URL path, the query string, or anywhere in the body.
+    Keys are not case-sensitive because every nested string is scanned.
     """
     if str(method or "GET").upper() in {"GET", "HEAD", "OPTIONS"}:
         return
-    blob = payload if isinstance(payload, dict) else {}
-    qid = str(blob.get("ID") or blob.get("QuoteID") or "").strip()
-    path_l = str(path or "").casefold()
-    if not qid:
-        for part in path_l.replace("\\", "/").split("/"):
-            if is_forbidden_quote_id(part):
-                qid = part
-                break
-    if is_forbidden_quote_id(qid):
+    hit = _string_hit(str(path or ""), url_tokens=True)
+    if hit is None and params is not None:
+        hit = _walk_hit(params)
+    if hit is None and payload is not None:
+        hit = _walk_hit(payload)
+    if hit:
         raise ForbiddenQuoteError(
-            f"Refusing to PATCH/reuse forbidden live quote {qid}"
-        )
-    qn = str(blob.get("QuoteNumber") or "").strip()
-    if is_forbidden_quote_number(qn):
-        suffix = f" ({qid})" if qid else ""
-        raise ForbiddenQuoteError(
-            f"Refusing to PATCH/reuse forbidden live quote {qn}{suffix}"
+            f"Refusing to PATCH/reuse forbidden live quote {hit}"
         )

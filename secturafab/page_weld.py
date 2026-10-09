@@ -837,6 +837,13 @@ def set_page_quote_number(quote_id: str, quote_number: str) -> list[str]:
     number = str(quote_number or "").strip()
     if not number or not str(quote_id or "").strip():
         return ["Quote Number left blank — not calling UpdatePropertyValue"]
+    from .forbidden_quotes import refuse_forbidden_quote_write
+
+    refuse_forbidden_quote_write(
+        method="POST",
+        path="/Quote/UpdatePropertyValue",
+        payload={"ID": quote_id, "QuoteNumber": number},
+    )
     from .chrome_cdp import _cdp_evaluate_promise, minted_edit_tab_ready
 
     gate = minted_edit_tab_ready(quote_id, navigate=False)
@@ -867,6 +874,13 @@ def set_page_quote_description(quote_id: str, description: str) -> list[str]:
     text = str(description or "").strip()
     if not text or not str(quote_id or "").strip():
         return ["Description left blank — not calling UpdatePropertyValue"]
+    from .forbidden_quotes import refuse_forbidden_quote_write
+
+    refuse_forbidden_quote_write(
+        method="POST",
+        path="/Quote/UpdatePropertyValue",
+        payload={"ID": quote_id, "Description": text},
+    )
     from .chrome_cdp import _cdp_evaluate_promise, minted_edit_tab_ready
 
     gate = minted_edit_tab_ready(quote_id, navigate=False)
@@ -917,6 +931,13 @@ def add_page_assembly(
         or is_drawing_boilerplate_title(line)
     ):
         line = ""
+    from .forbidden_quotes import refuse_forbidden_quote_write
+
+    refuse_forbidden_quote_write(
+        method="POST",
+        path="/Quote/AddItem_Assembly",
+        payload={"quoteId": str(quote_id), "name": key, "description": line},
+    )
     from .chrome_cdp import _cdp_evaluate_promise, minted_edit_tab_ready, page_jquery_ajax
 
     gate = minted_edit_tab_ready(quote_id, navigate=False)
@@ -987,6 +1008,13 @@ def update_existing_assembly_name(
         return []
     if not str(quote_id or "").strip():
         return ["WARNING: page assembly stopped (assembly_name_missing)"]
+    from .forbidden_quotes import refuse_forbidden_quote_write
+
+    refuse_forbidden_quote_write(
+        method="POST",
+        path="/Quote/AddItem_Assembly",
+        payload={"quoteId": str(quote_id), "description": line},
+    )
     from .chrome_cdp import _cdp_evaluate_promise, minted_edit_tab_ready, page_jquery_ajax
 
     gate = minted_edit_tab_ready(quote_id, navigate=False)

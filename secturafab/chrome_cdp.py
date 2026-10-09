@@ -1145,6 +1145,22 @@ def _empty_quotes_fetch(*, include_list: bool = True) -> dict[str, Any]:
     return out
 
 
+def _guard_page_write(
+    quote_id: str | None,
+    path: str,
+    extra: Any = None,
+    *,
+    method: str = "POST",
+) -> None:
+    """Refuse a page write before any CDP tab lookup."""
+    from .forbidden_quotes import refuse_forbidden_quote_write
+
+    payload: dict[str, Any] = {"ID": quote_id}
+    if extra is not None:
+        payload["body"] = extra
+    refuse_forbidden_quote_write(method=method, path=path, payload=payload)
+
+
 def quotes_tab_fetch(
     *,
     path: str,
@@ -1158,6 +1174,14 @@ def quotes_tab_fetch(
     prefer_edit: bool = False,
 ) -> dict[str, Any]:
     """POST from the live Quotes or Quote/EDIT document. Never logs AF."""
+    from .forbidden_quotes import refuse_forbidden_quote_write
+
+    refuse_forbidden_quote_write(
+        method=method,
+        path=path,
+        payload=json_body if json_body is not None else form_pairs,
+        params=query,
+    )
     allowed = path if str(path or "").startswith("/") else f"/{path}"
     if allowed not in _QUOTES_TAB_FETCH_PATHS:
         return _empty_quotes_fetch(include_list=include_list)
@@ -1394,8 +1418,9 @@ def post_part_create_from_quotes_tab(
 
     Live Skin Assembly 5b622a0d: jquery_ajax + EDIT Referer + #img H/W
     still returned InternalData empty 8/8. Server never fills InternalData
-    on explode. Same six form keys. Never invent InternalData. Never logs AF.
+    on explode. Same six form keys.     Never invent InternalData. Never logs AF.
     """
+    _guard_page_write(quote_id, "/part/create", form_pairs)
     tab = _part_create_tab(base=base, quote_id=quote_id)
     from_edit = bool(tab and _is_quote_edit_tab(tab))
     spec = {"form": [[str(k), str(v)] for k, v in (form_pairs or []) if k]}
@@ -3918,6 +3943,11 @@ def bind_do_create_dxf_parts_success(
     and the Quotes list are the wrong documents (live a64509d).
     Does not POST /part/create.
     """
+    _guard_page_write(
+        quote_id,
+        "/Quote/EDIT",
+        {"QuoteNumber": quote_number, "rows": list_rows},
+    )
     kids = [r for r in list_rows if isinstance(r, dict)]
     spec = {
         "List": kids,
@@ -4056,6 +4086,7 @@ def page_jquery_ajax(
     base: str | None = None,
 ) -> dict[str, Any]:
     """In-page $.ajax. Reads the antiforgery token from the DOM. No cookies."""
+    _guard_page_write(quote_id, str(url), data, method=method)
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=False)
     if not gate.get("ok"):
         return {
@@ -4224,6 +4255,7 @@ def drop_flagged_grid_dxf_parts(
     with the resolved kids (live 34892 on 34887-1). No row is removed
     when Chrome is not the session.
     """
+    _guard_page_write(quote_id, "/Quote/EDIT", labels)
     names = []
     seen: set[str] = set()
     for label in labels or []:
@@ -4280,6 +4312,7 @@ def invoke_page_dxf_finish(
     ``.076 - 14 Ga``). The page does not read the model thickness.
     Missing gauge fails closed inside the page script.
     """
+    _guard_page_write(quote_id, "/Quote/AddItem_DXFFiles")
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     skipped = {
         "via": "skipped",
@@ -7067,6 +7100,7 @@ def invoke_page_pdf_finish(
     quote_id: str | None = None,
 ) -> dict[str, Any]:
     """Kyle Image Files Finish: page OnAddPDFClick posts GetPDFData FileList."""
+    _guard_page_write(quote_id, "/Quote/AddItem_PDFFiles")
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     skipped = {
         "via": "skipped",
@@ -7334,6 +7368,7 @@ def stamp_pdf_kendo_flats(
         "getpdfdata_internal_dim1_n": 0,
         "getpdfdata_outside_perimeter_n": 0,
     }
+    _guard_page_write(quote_id, "/Quote/EDIT")
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_gate"] = str(gate.get("reason") or "")
     if not gate.get("ok"):
@@ -7471,6 +7506,7 @@ def bind_quote_organization(
     base: str | None = None,
 ) -> dict[str, Any]:
     """Quotes UI org bind: set known PrimaryOrganizationID. No autocomplete."""
+    _guard_page_write(quote_id, "/Quote/EDIT", {"org_id": org_id})
     empty = {
         "ok": False,
         "via": "",
@@ -7588,6 +7624,7 @@ def bind_quote_organization_detail(
     if not name:
         empty["why"] = "org_name_missing"
         return empty
+    _guard_page_write(quote_id, "/Quote/EDIT", {"org_name": org_name})
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=False)
     if not gate.get("ok"):
         empty["why"] = str(gate.get("reason") or "wrong_document")
@@ -8337,6 +8374,7 @@ def invoke_page_linear_finish(
     quote_id: str | None = None,
 ) -> dict[str, Any]:
     """Kyle Long Finish: page OnAddLinearClick after orange Long + SKU + length."""
+    _guard_page_write(quote_id, "/Quote/AddItem_Linear")
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     skipped = {
         "via": "skipped",
@@ -8452,6 +8490,7 @@ def stamp_linear_form(
         "machine": "Saw",
         "edit_gate": "",
     }
+    _guard_page_write(quote_id, "/Quote/EDIT")
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_gate"] = str(gate.get("reason") or "")
     if not gate.get("ok"):
@@ -8755,6 +8794,7 @@ def stamp_dxf_kendo_stock(
         "getperimeter_xhr": False,
         "perimeter_via": "",
     }
+    _guard_page_write(quote_id, "/Quote/EDIT")
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_gate"] = str(gate.get("reason") or "")
     if not gate.get("ok"):
@@ -9205,6 +9245,7 @@ def upload_pdf_via_page_add_files(
         "finish_why": "wrong_document",
         "edit_gate": "",
     }
+    _guard_page_write(quote_id, "/Attachment/UploadItem_PDFFiles")
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_gate"] = str(gate.get("reason") or "")
     if not gate.get("ok"):
@@ -9676,6 +9717,7 @@ def upload_dxf_via_page_add_files(
         "save_url": "",
         "zone": "",
     }
+    _guard_page_write(quote_id, "/CadImport/UploadItem_DXFFiles")
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_gate"] = str(gate.get("reason") or "")
     if not gate.get("ok"):
@@ -9864,6 +9906,7 @@ def create_all_parts_from_grid_dxf(
         "internaldata_nonempty_n": 0,
         "cadimport_xhr_capture": [],
     }
+    _guard_page_write(quote_id, "/part/create")
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     if not gate.get("ok"):
         empty["why"] = str(gate.get("reason") or "wrong_document")
@@ -11040,6 +11083,7 @@ def apply_grid_dxf_part_modes(
         "edit_gate": "",
         "kendo_row_keys": [],
     }
+    _guard_page_write(quote_id, "/CadImport/SetPartMode", rows)
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     empty["edit_quote_id"] = str(gate.get("edit_quote_id") or "")
     empty["minted_id"] = str(gate.get("minted_id") or quote_id or "")
@@ -11610,6 +11654,11 @@ def invoke_page_copy_move_to_assembly(
     base: str | None = None,
 ) -> dict[str, Any]:
     """Kyle Copy/Move into Assembly: in-page EDIT, not cookie HTTP."""
+    _guard_page_write(
+        quote_id,
+        "/Quote/CopyMoveItemToAssembly",
+        {"item_id": item_id, "assembly_id": assembly_id},
+    )
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     skipped = {
         "via": "skipped",
@@ -11688,6 +11737,7 @@ def invoke_page_add_weld_operation(
     base: str | None = None,
 ) -> dict[str, Any]:
     """Kyle Add Weld on the assembly: in-page EDIT, not cookie HTTP."""
+    _guard_page_write(quote_id, "/Quote/AddOperation", {"item_id": item_id})
     gate = minted_edit_tab_ready(quote_id, base=base, navigate=True)
     skipped = {
         "via": "skipped",

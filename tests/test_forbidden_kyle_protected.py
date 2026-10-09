@@ -3,10 +3,20 @@
 Quote-number matching is exact after strip and casefold. These quotes are
 listed both as Q10488 and as 10488 so either spelling is refused. Other
 Q-numbers stay exact: 10429 is not Q10429.
+
+Write scans also refuse a forbidden id, id-shaped prefix, or quote number
+anywhere in a POST/PUT/PATCH/DELETE path, query, or nested body. A prefix
+matches only a UUID or a bare 8-hex token.
 """
+
+import socket
+from unittest.mock import MagicMock
 
 import pytest
 
+from secturafab.auth import AccessToken
+from secturafab.client import SecturaFabApiError, SecturaFabClient
+from secturafab.config import SecturaFabConfig
 from secturafab.forbidden_quotes import (
     FORBIDDEN_LIVE_QUOTE_ID_PREFIXES,
     FORBIDDEN_LIVE_QUOTE_IDS,
@@ -139,4 +149,217 @@ def test_other_quotes_keep_exact_number_matching():
             method="PATCH",
             path="v1/quote",
             payload={"ID": item_id},
+        )
+
+
+Q10603 = "337c3af0-6f89-4925-b3b2-1abe482f41d7"
+SAFE_ID = "11111111-2222-3333-4444-555555555555"
+
+
+@pytest.fixture(autouse=True)
+def _block_network(monkeypatch):
+    """These tests must not open a socket to SecturaFAB or Chrome."""
+
+    def _refuse(*_args, **_kwargs):
+        raise AssertionError("network connect blocked")
+
+    monkeypatch.setattr(socket.socket, "connect", _refuse)
+    monkeypatch.setattr(socket.socket, "connect_ex", _refuse)
+
+
+def _quiet_client():
+    session = MagicMock()
+    response = MagicMock()
+    response.status_code = 200
+    response.content = b""
+    response.text = ""
+    response.headers = {}
+    response.url = "https://example.invalid/api/v1/quote"
+    session.request.return_value = response
+    session.post.return_value = response
+    client = SecturaFabClient(
+        config=SecturaFabConfig(
+            base_url="https://example.invalid",
+            token_url_override="https://example.invalid/token",
+            client_id="test",
+            client_secret="test",
+        ),
+        session=session,
+    )
+    client._token = AccessToken(access_token="test-token")
+    return client, session
+
+
+def test_quote_online_update_list_body_is_refused():
+    """PUT quoteOnline/update sends a list; ParentID is not a top-level dict key."""
+    client, session = _quiet_client()
+    body = [
+        {
+            "ParamName": "UnitCost",
+            "Value": "1",
+            "ID": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "ParentID": Q10603,
+        }
+    ]
+    with pytest.raises(SecturaFabApiError, match="337c3af0"):
+        client.request("PUT", "v1/quoteOnline/update", json=body)
+    session.request.assert_not_called()
+    session.post.assert_not_called()
+
+
+def test_update_item_part_query_quote_id_is_refused():
+    client, session = _quiet_client()
+    with pytest.raises(SecturaFabApiError, match="337c3af0"):
+        client.request(
+            "POST",
+            "v1/quoteOnline/UpdateItem_Part",
+            params={
+                "quoteID": Q10603,
+                "itemID": "00000000-0000-0000-0000-000000000000",
+            },
+        )
+    session.request.assert_not_called()
+
+
+def test_post_multipart_quick_add_cad_calls_the_guard():
+    client, session = _quiet_client()
+    with pytest.raises(SecturaFabApiError, match="337c3af0"):
+        client.post_multipart(
+            "v1/quoteOnline/quickAddCAD",
+            files=[("files", ("part.pdf", b"%PDF", "application/pdf"))],
+            params={"quoteID": Q10603},
+        )
+    session.post.assert_not_called()
+    session.request.assert_not_called()
+
+
+def test_quote_id_key_case_variants_are_refused():
+    for key in ("QuoteId", "quoteId", "QUOTEID", "quoteid"):
+        with pytest.raises(ForbiddenQuoteError, match="337c3af0"):
+            refuse_forbidden_quote_write(
+                method="POST",
+                path="v1/quote",
+                payload={key: Q10603},
+            )
+
+
+def test_nested_dict_and_list_ids_are_refused():
+    nested = {
+        "rows": [
+            {"meta": {"quoteId": Q10603}},
+            {"note": "untouched"},
+        ]
+    }
+    with pytest.raises(ForbiddenQuoteError, match="337c3af0"):
+        refuse_forbidden_quote_write(method="PATCH", path="v1/quote", payload=nested)
+    with pytest.raises(ForbiddenQuoteError, match="Q10488"):
+        refuse_forbidden_quote_write(
+            method="PUT",
+            path="v1/quote",
+            payload=[{"child": {"QuoteNumber": "see Q10488 today"}}],
+        )
+
+
+def test_quote_id_in_url_path_or_query_is_refused():
+    with pytest.raises(ForbiddenQuoteError, match="337c3af0"):
+        refuse_forbidden_quote_write(
+            method="DELETE",
+            path=f"v1/quoteOnline/UpdateItem_Part?quoteId={Q10603}",
+        )
+    client, session = _quiet_client()
+    with pytest.raises(SecturaFabApiError, match="337c3af0"):
+        client.website_request(
+            "POST",
+            "/Quote/AddFeature",
+            params={"quoteId": Q10603},
+        )
+    session.request.assert_not_called()
+
+
+def test_quotes_tab_fetch_calls_the_guard_before_chrome(monkeypatch):
+    import secturafab.chrome_cdp as cdp
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("chrome tab lookup")
+
+    monkeypatch.setattr(cdp, "quotes_tab", _boom)
+    monkeypatch.setattr(cdp, "_quotes_or_edit_tab", _boom)
+    with pytest.raises(ForbiddenQuoteError, match="337c3af0"):
+        cdp.quotes_tab_fetch(
+            path="/Quote/EDIT",
+            json_body={"quoteId": Q10603},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="Q10634"):
+        cdp.quotes_tab_fetch(
+            path="/part/create",
+            query={"quoteId": "Q10634"},
+            form_pairs=[("ID", "not-a-quote")],
+        )
+
+
+def test_prefix_matches_only_id_shaped_values():
+    prose = {
+        "note": "a24c6896 leftover note is not an id",
+        "code": "a24c6896extra",
+        "almost": "a24c6896-not-a-uuid",
+    }
+    refuse_forbidden_quote_write(method="POST", path="v1/quote", payload=prose)
+    assert not is_forbidden_quote_id("a24c6896 leftover note is not an id")
+    assert not is_forbidden_quote_id("a24c6896extra")
+    with pytest.raises(ForbiddenQuoteError, match="a24c6896"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="v1/quote",
+            payload={"ID": "a24c6896"},
+        )
+    with pytest.raises(ForbiddenQuoteError, match="a24c6896"):
+        refuse_forbidden_quote_write(
+            method="POST",
+            path="v1/quote",
+            payload={"ID": "a24c6896-1111-2222-3333-444444444444"},
+        )
+    refuse_forbidden_quote_write(
+        method="POST",
+        path="v1/quote",
+        payload={"QuoteNumber": "Q104880"},
+    )
+    refuse_forbidden_quote_write(
+        method="POST",
+        path="v1/quote",
+        payload={"QuoteNumber": "104880"},
+    )
+
+
+def test_normal_write_to_other_quote_is_allowed():
+    client, session = _quiet_client()
+    response = client.request(
+        "POST",
+        "v1/quote",
+        json={"ID": SAFE_ID, "QuoteNumber": "Q99999", "note": "a24c6896 leftover"},
+    )
+    assert response.status_code == 200
+    session.request.assert_called_once()
+    refuse_forbidden_quote_write(method="GET", path=f"v1/quote/{Q10603}")
+    refuse_forbidden_quote_write(method="HEAD", path=f"v1/quote?quoteId={Q10603}")
+    refuse_forbidden_quote_write(
+        method="OPTIONS",
+        path="v1/quote",
+        payload={"quoteId": Q10603},
+    )
+
+
+def test_page_assembly_writes_refuse_before_chrome(monkeypatch):
+    import secturafab.chrome_cdp as cdp
+    import secturafab.page_weld as weld
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("chrome tab lookup")
+
+    monkeypatch.setattr(cdp, "minted_edit_tab_ready", _boom)
+    with pytest.raises(ForbiddenQuoteError, match="337c3af0"):
+        weld.add_page_assembly(quote_id=Q10603, name="BRACKET", description="Side plate")
+    with pytest.raises(ForbiddenQuoteError, match="337c3af0"):
+        weld.update_existing_assembly_name(
+            quote_id=Q10603,
+            description="Side plate assembly",
         )
