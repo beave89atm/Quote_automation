@@ -11,7 +11,7 @@ Kannon Quote Automation is a FastAPI + React app for weld-first quoting: PDF (an
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-Open http://127.0.0.1:8000 (password from `config/shop_rates.yaml`).
+Open http://127.0.0.1:8000 (password from the `QUOTE_APP_PASSWORD` environment variable).
 
 Dev UI (optional): API on `:8000` with `--reload`, then `cd frontend && npm install && npm run dev` → http://localhost:5173.
 
@@ -32,6 +32,8 @@ cd frontend; npm run build
 
 No lint or typecheck scripts are configured (no ruff/mypy/eslint/tsc).
 
+Pytest installs a network guard in `tests/conftest.py` that refuses Chrome DevTools ports and `secturafab.com` before a socket opens. Do not disable it to reach a live Chrome or SecturaFAB session.
+
 ## Architecture boundaries — ask before rewriting
 
 - `secturafab/push.py` push order (CAD import → assembly link → ops → **BOM qty last**). Skipping settles or calling `UpdateItem_Part` on STEP assemblies can wipe `ItemList`.
@@ -39,7 +41,7 @@ No lint or typecheck scripts are configured (no ruff/mypy/eslint/tsc).
 - Single-component PDF quotes **and single-solid STEP** quotes: **one part line only** (no Assembly conversion). Multi-body STEP / multi-BOM lesson 02/04 still uses Assembly + children.
 - `quote_core/weld/takeoff.py`, `quote_core/bom.py`, `bom_config` multi-dash BOM logic.
 - `app/db.py` SQLite schema / additive migrations; do not drop or rename columns casually.
-- `app/auth.py` in-memory shared-password sessions.
+- `app/auth.py` in-memory shared-password sessions. The password is `QUOTE_APP_PASSWORD` only. Unset refuses login.
 - SPA catch-all at the bottom of `app/main.py` — keep all `/api` routes registered above it.
 - Do not delete or overwrite live SecturaFAB customer quotes unless Kyle explicitly asks.
 
@@ -47,8 +49,8 @@ No lint or typecheck scripts are configured (no ruff/mypy/eslint/tsc).
 
 - Backend: FastAPI routes in `app/main.py`; job work in `app/services.py`; domain in `quote_core/`.
 - Frontend: React Router under `frontend/src/pages/`; API via `frontend/src/api.js` with `X-App-Token`.
-- Auth: `POST /api/login` → `kannon_quote_token`; protect with `Depends(require_auth)`.
-- Shop rates: `config/shop_rates.yaml`. SecturaFAB: `.env` / `secturafab/config.py`.
+- Auth: `POST /api/login` checks `QUOTE_APP_PASSWORD` (never `config/shop_rates.yaml`). Startup loads `.env` with `override=False`. Unset or blank refuses login and logs an error. Protect routes with `Depends(require_auth)`.
+- Shop rates: `config/shop_rates.yaml` (no password). SecturaFAB: `.env` / `secturafab/config.py`.
 - Runtime is the Chief of Staff Linux box. Website Finish uses `SECTURA_WEBSITE_COOKIE` (env or file) from that box Chrome. Fail closed if missing. Do not unwrap Windows Chrome. Do not run on Kyle's quoting PC.
 - Quoting behavior: prefer `docs/quoting/*.md` before inventing shortcuts.
 - Prefer imperial labels on SecturaFAB line items; do not casually rewrite STEP geometry for units.

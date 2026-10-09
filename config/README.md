@@ -6,8 +6,9 @@ Fill these before trusting quote times:
 
 | Field | Meaning |
 |-------|---------|
-| `app.shared_password` | Team login for the web app (v1) |
 | `app.default_efficiency_pct` | Office/shop efficiency applied to quoted time |
+
+The staff web app password is the `QUOTE_APP_PASSWORD` environment variable. Do not put it in this file. If that variable is unset or blank, logins are refused.
 | `weld.ipm` | **Manual** weld effective inches/minute by fillet size |
 | `weld.process` | `manual` for now; robot rates TBD |
 | `fitup.weight_bands` | Minutes per **piece** by weight band (`per_piece_minutes`) |

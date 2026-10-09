@@ -19,6 +19,13 @@ def build_hosted_app() -> FastAPI:
     app = FastAPI(title="Kannon Quote Queue", version="0.1.0")
     app.include_router(hosted_router)
 
+    @app.on_event("startup")
+    def _startup() -> None:
+        from .auth import load_quote_password_env, warn_if_quote_password_missing
+
+        load_quote_password_env()
+        warn_if_quote_password_missing()
+
     @app.get("/api/health")
     def health() -> dict[str, str]:
         return {"status": "ok", "platform": platform_name()}

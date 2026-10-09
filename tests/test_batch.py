@@ -80,10 +80,15 @@ def test_no_weld_symbols_empty_items_and_zero_fitup():
     assert times.fitup_no_fixture_minutes == 0.0
 
 
+_TEST_PASSWORD = "test-quote-password"
+
+
 @pytest.fixture()
 def batch_client(tmp_path):
     previous = os.environ.get("KANNON_DATA_DIR")
+    previous_password = os.environ.get("QUOTE_APP_PASSWORD")
     os.environ["KANNON_DATA_DIR"] = str(tmp_path)
+    os.environ["QUOTE_APP_PASSWORD"] = _TEST_PASSWORD
     _reload_app_modules()
     from app.main import app
 
@@ -94,24 +99,21 @@ def batch_client(tmp_path):
         os.environ.pop("KANNON_DATA_DIR", None)
     else:
         os.environ["KANNON_DATA_DIR"] = previous
+    if previous_password is None:
+        os.environ.pop("QUOTE_APP_PASSWORD", None)
+    else:
+        os.environ["QUOTE_APP_PASSWORD"] = previous_password
     _reload_app_modules()
 
 
 @pytest.fixture()
-def batch_token(batch_client: TestClient) -> str | None:
-    from app.paths import RATES_PATH
-    from quote_core.config import load_shop_rates
-
-    rates = load_shop_rates(RATES_PATH)
-    password = rates.shared_password or ""
-    if not password:
-        return None
-    res = batch_client.post("/api/login", json={"password": password})
+def batch_token(batch_client: TestClient) -> str:
+    res = batch_client.post("/api/login", json={"password": _TEST_PASSWORD})
     assert res.status_code == 200
     return str(res.json()["token"])
 
 
-def test_batch_create_returns_n_jobs(batch_client: TestClient, batch_token: str | None):
+def test_batch_create_returns_n_jobs(batch_client: TestClient, batch_token: str):
     headers = {"X-App-Token": batch_token} if batch_token else {}
     files = [
         ("files", ("part-a.pdf", io.BytesIO(b"%PDF-1"), "application/pdf")),
@@ -136,7 +138,7 @@ def test_batch_create_returns_n_jobs(batch_client: TestClient, batch_token: str 
     assert not jobs_b.get("stp_filename")
 
 
-def test_batch_push_rejects_processing(batch_client: TestClient, batch_token: str | None):
+def test_batch_push_rejects_processing(batch_client: TestClient, batch_token: str):
     headers = {"X-App-Token": batch_token} if batch_token else {}
     files = [("files", ("wait.pdf", io.BytesIO(b"%PDF-w"), "application/pdf"))]
     with patch("app.main.process_job"):
@@ -158,7 +160,7 @@ def test_batch_push_rejects_processing(batch_client: TestClient, batch_token: st
 
 
 def test_batch_push_queues_pdf_only_without_library(
-    batch_client: TestClient, batch_token: str | None
+    batch_client: TestClient, batch_token: str
 ):
     from app.db import Job, SessionLocal
 

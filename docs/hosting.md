@@ -18,7 +18,7 @@ Testing stays on free tiers. Moving to a paid plan later is a settings change: t
 - `HOSTED_DATABASE_URL` empty uses SQLite under `data/hosted.sqlite`. On a host set it to Neon with the pure-Python driver: `postgresql+pg8000://...`. The app does not rewrite the URL. The serverless disk does not keep SQLite.
 - Auth.js and Clerk still fail closed (`verifier_not_configured`). Entra is the provider that verifies tokens. Switching to Auth.js or Clerk is still a config name, not a second verifier.
 - The box worker is a process on the shop PC. It is not a Vercel function or a Cloudflare worker. Chrome and the Sectura session cannot run inside the serverless function.
-- Local shop password login at `POST /api/login` is unchanged for the existing app.
+- Local shop password login at `POST /api/login` reads `QUOTE_APP_PASSWORD`. It does not read `config/shop_rates.yaml`.
 
 ## One codebase, two hosts
 
@@ -131,6 +131,7 @@ Hosted front door:
 - `HOSTED_API_BASE`
 - `HOSTED_AUTH_ADMINS`
 - `HOSTED_AUTH_USERS`
+- `QUOTE_APP_PASSWORD`
 
 Non-secret config (still do not invent values in git): `HOSTED_PLATFORM`, `HOSTED_AUTH_PROVIDER`, `HOSTED_AUTH_DOMAIN`, `HOSTED_BLOB_PROVIDER` (`local`, `vercel`, `r2`, `sharepoint`), `HOSTED_BLOB_DIR`, `HOSTED_SHAREPOINT_FOLDER`, `HOSTED_FILE_RETENTION_DAYS`, `R2_ENDPOINT`, `HOSTED_WORKER_POLL_S`, `HOSTED_WORKER_ACTIVE_HOURS`, `HOSTED_WORKER_TIMEZONE`, `HOSTED_WORKER_OFFHOURS_POLL_S`, `HOSTED_WORKER_EMPTY_BACKOFF_S`, `HOSTED_WORKER_EMPTY_BACKOFF_MAX_S`, `HOSTED_QUEUE_CACHE_S`, `VITE_API_BASE`.
 
@@ -148,9 +149,10 @@ Sectura names the box already uses (unchanged, still never committed):
 
 ## Local dev
 
-`HOSTED_AUTH_PROVIDER=local` (the default) keeps a password form on `/queue`. The password is the existing shop shared password. The email must still be on the allow-list. An empty shared password does not sign anyone in.
+`HOSTED_AUTH_PROVIDER=local` (the default) keeps a password form on `/queue`. The password is `QUOTE_APP_PASSWORD`, the same staff password as `POST /api/login`. It is not read from `config/shop_rates.yaml`. The email must still be on the allow-list. An unset or blank `QUOTE_APP_PASSWORD` does not sign anyone in.
 
 ```powershell
+$env:QUOTE_APP_PASSWORD = "<local-only password>"
 $env:HOSTED_AUTH_ADMINS = "kyle@kannonmfg.com"
 $env:HOSTED_AUTH_USERS = "pat@kannonmfg.com"
 $env:HOSTED_WORKER_TOKEN = "<local-only token>"

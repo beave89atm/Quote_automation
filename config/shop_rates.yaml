@@ -2,8 +2,8 @@
 # Times use effective shop IPM (includes typical repositioning), not pure arc-on speed.
 
 app:
-  # Shared password for team access (v1). Leave empty to disable auth gate.
-  shared_password: "kannon"
+  # Staff login password is the QUOTE_APP_PASSWORD environment variable.
+  # Do not put it in this file. If that variable is unset, logins are refused.
   default_efficiency_pct: 85
 
 # Box-local drawing library (LOM + child PDFs on this Linux box).

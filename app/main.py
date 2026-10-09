@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from quote_core.config import load_shop_rates
 
-from .auth import login, require_auth
+from .auth import load_quote_password_env, login, require_auth, warn_if_quote_password_missing
 from .batch import pair_upload_files, paired_part_summary
 from .db import Job, SessionLocal, init_db
 from .hosted_routes import router as hosted_router
@@ -36,6 +36,8 @@ app.add_middleware(
 def _startup() -> None:
     ensure_data_dirs()
     init_db()
+    load_quote_password_env()
+    warn_if_quote_password_missing()
 
 
 class LoginBody(BaseModel):
@@ -65,7 +67,7 @@ def api_login(body: LoginBody) -> dict[str, Any]:
     rates = load_shop_rates(RATES_PATH)
     return {
         "token": token,
-        "auth_required": bool(rates.shared_password),
+        "auth_required": True,
         "default_efficiency_pct": rates.default_efficiency_pct,
     }
 
