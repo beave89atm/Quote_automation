@@ -135,6 +135,9 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "15e6b5ad-9919-49ab-aae1-24a7b44f25c2",  # Q10430 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0); Kyle said start over; invent=false 2026-09-16; never remint / PATCH (do not forbid H.6.38 — PN remints remain ALLOWED)
         "1ddb1b9a-0267-40d6-b448-3798dd6f3120",  # Q10431 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0); same class as Q10430; invent=false 2026-09-16; never remint / PATCH (do not forbid H.6.38 — PN remints remain ALLOWED)
         "bec3c218-de87-4a3d-b9db-2429aaeb5e45",  # Q10435 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff blocked; Geometry Cleanup stuck dims 0.0; /CadImport/CADData 404; /part/create never fired; invent=false 2026-09-16; never remint / PATCH (do not forbid H.6.38 — PN remints remain ALLOWED)
+        "337c3af0-6f89-4925-b3b2-1abe482f41d7",  # Q10603 Kyle-protected — never remint / PATCH / delete
+        "9d8c8bc9-ec70-4cc4-a2c7-abbaae59a7ef",  # Q10634 Transtar CNC bracket Kyle-protected — never remint / PATCH / delete
+        "3fa14f86-f4ef-49d6-bb43-1896a0eed92e",  # Lvtong D203 / 2.03.115.100001 Kyle-protected customer quote — never remint / PATCH / delete
         "eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4",  # Q10350 / 21843-1 Time Waco Long/Linear PASS — Hot Rolled Round Bar Ø0.625 × 28.0843 Finish; invent=false; not a Contours leftover; bar/Linear path; never remint / PATCH
         "4902c597-2ad6-4ebf-b577-dd6cf20a7d87",  # Q10338 / CROSSDRAIN-12X7X60 PR18 Cad Image Files PASS — AIM Cross Drain / Time Waco / PL14 Ga-SS316 / 69.875×25.875 / Laser Bay1 / Contours=1 / Finish UC 100.45 + PR laser pack / bends_count=8 shop PDF / UpdateItemType Cad 200; post-pass bend-API dabble may show live UC 3.25 — Finish snapshot UC 100.45 is PASS basis; invented=false; never remint / PATCH
         "5e7bfc0b-ecf9-46cf-8851-d61062141ce7",  # H638-CADPLATE Cad-for-plate leftover — SetPartMode 0 + ProductType 100 Cad:1 classify OK, InternalData empty, Finish refuse; invented=false; ZZ-DEL-H638-CADPLATE — do not remint / PATCH
@@ -282,6 +285,9 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "15e6b5ad",  # Q10430 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0); Kyle said start over; invent=false 2026-09-16; never remint / PATCH
         "1ddb1b9a",  # Q10431 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0); same class as Q10430; invent=false 2026-09-16; never remint / PATCH
         "bec3c218",  # Q10435 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff blocked; Geometry Cleanup stuck dims 0.0; /CadImport/CADData 404; /part/create never fired; invent=false 2026-09-16; never remint / PATCH
+        "337c3af0",  # Q10603 Kyle-protected — never remint / PATCH
+        "9d8c8bc9",  # Q10634 Transtar CNC bracket Kyle-protected — never remint / PATCH
+        "3fa14f86",  # Lvtong D203 / 2.03.115.100001 Kyle-protected — never remint / PATCH
         "38fa25fc",  # prior burn Q10421→Q10407 drift leftover — full UUID not found in repo/logs/Dropbox; never remint / PATCH that UUID (do not forbid 35146-1 — PN remints remain ALLOWED)
         "d796cdbe",  # Q10407 Safe Cave List=[] leftover — never remint / PATCH
         "09bae33d",  # Q10408 Safe Cave List=[] leftover — never remint / PATCH
@@ -457,6 +463,15 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "Q10430",  # spent 15e6b5ad / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0); Kyle said start over; invent=false 2026-09-16; never remint / PATCH (do not forbid H.6.38 — PN remints remain ALLOWED)
         "Q10431",  # spent 1ddb1b9a / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0); same class as Q10430; invent=false 2026-09-16; never remint / PATCH (do not forbid H.6.38 — PN remints remain ALLOWED)
         "Q10435",  # spent bec3c218 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff blocked; Geometry Cleanup stuck dims 0.0; /CadImport/CADData 404; /part/create never fired; invent=false 2026-09-16; never remint / PATCH (do not forbid H.6.38 — PN remints remain ALLOWED)
+        "Q10488",  # Kyle-protected Diamond C — Sectura quote id not in repo; never remint / PATCH / delete
+        "10488",  # Q10488 without the Q prefix
+        "Q10597",  # Kyle-protected — Sectura quote id not in repo; never remint / PATCH / delete
+        "10597",  # Q10597 without the Q prefix
+        "Q10603",  # Kyle-protected 337c3af0 — never remint / PATCH / delete
+        "10603",  # Q10603 without the Q prefix
+        "Q10634",  # Kyle-protected Transtar CNC bracket 9d8c8bc9 — never remint / PATCH / delete
+        "10634",  # Q10634 without the Q prefix
+        "2.03.115.100001",  # Lvtong D203 / 3fa14f86 Kyle-protected — never remint / PATCH / delete
         "Q10470",  # spent H.8.38 remint leftover shell Contours=0 — UUID not found in live-H838-remint-kyle-path.txt / Dropbox / remint logs; description-only; never remint / PATCH; do not invent UUID or Contours (do not forbid H.8.38 — PN remints remain ALLOWED)
         "Q10471",  # spent H.8.38 remint leftover shell Contours=0 — UUID not found in live-H838-remint-kyle-path.txt / Dropbox / remint logs; description-only; never remint / PATCH; do not invent UUID or Contours (do not forbid H.8.38 — PN remints remain ALLOWED)
         "Q10472",  # spent H.8.38 remint leftover shell Contours=0 — UUID not found in live-H838-remint-kyle-path.txt / Dropbox / remint logs; description-only; never remint / PATCH; do not invent UUID or Contours (do not forbid H.8.38 — PN remints remain ALLOWED)
