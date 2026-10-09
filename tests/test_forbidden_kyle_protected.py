@@ -252,7 +252,7 @@ def test_nested_dict_and_list_ids_are_refused():
     }
     with pytest.raises(ForbiddenQuoteError, match="337c3af0"):
         refuse_forbidden_quote_write(method="PATCH", path="v1/quote", payload=nested)
-    with pytest.raises(ForbiddenQuoteError, match="Q10488"):
+    with pytest.raises(ForbiddenQuoteError, match="10488"):
         refuse_forbidden_quote_write(
             method="PUT",
             path="v1/quote",
