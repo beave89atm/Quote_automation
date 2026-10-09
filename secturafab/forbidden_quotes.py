@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Kyle-confirmed + leftover + human Time quotes. Create NEW quotes only.
@@ -135,6 +136,9 @@ FORBIDDEN_LIVE_QUOTE_IDS = frozenset(
         "15e6b5ad-9919-49ab-aae1-24a7b44f25c2",  # Q10430 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0); Kyle said start over; invent=false 2026-09-16; never remint / PATCH (do not forbid H.6.38 — PN remints remain ALLOWED)
         "1ddb1b9a-0267-40d6-b448-3798dd6f3120",  # Q10431 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0); same class as Q10430; invent=false 2026-09-16; never remint / PATCH (do not forbid H.6.38 — PN remints remain ALLOWED)
         "bec3c218-de87-4a3d-b9db-2429aaeb5e45",  # Q10435 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff blocked; Geometry Cleanup stuck dims 0.0; /CadImport/CADData 404; /part/create never fired; invent=false 2026-09-16; never remint / PATCH (do not forbid H.6.38 — PN remints remain ALLOWED)
+        "337c3af0-6f89-4925-b3b2-1abe482f41d7",  # Q10603 Kyle-protected — never remint / PATCH / delete
+        "9d8c8bc9-ec70-4cc4-a2c7-abbaae59a7ef",  # Q10634 Transtar CNC bracket Kyle-protected — never remint / PATCH / delete
+        "3fa14f86-f4ef-49d6-bb43-1896a0eed92e",  # Lvtong D203 / 2.03.115.100001 Kyle-protected customer quote — never remint / PATCH / delete
         "eb6c48b8-36b5-4f8d-85b2-ce964fd9e8f4",  # Q10350 / 21843-1 Time Waco Long/Linear PASS — Hot Rolled Round Bar Ø0.625 × 28.0843 Finish; invent=false; not a Contours leftover; bar/Linear path; never remint / PATCH
         "4902c597-2ad6-4ebf-b577-dd6cf20a7d87",  # Q10338 / CROSSDRAIN-12X7X60 PR18 Cad Image Files PASS — AIM Cross Drain / Time Waco / PL14 Ga-SS316 / 69.875×25.875 / Laser Bay1 / Contours=1 / Finish UC 100.45 + PR laser pack / bends_count=8 shop PDF / UpdateItemType Cad 200; post-pass bend-API dabble may show live UC 3.25 — Finish snapshot UC 100.45 is PASS basis; invented=false; never remint / PATCH
         "5e7bfc0b-ecf9-46cf-8851-d61062141ce7",  # H638-CADPLATE Cad-for-plate leftover — SetPartMode 0 + ProductType 100 Cad:1 classify OK, InternalData empty, Finish refuse; invented=false; ZZ-DEL-H638-CADPLATE — do not remint / PATCH
@@ -282,6 +286,9 @@ FORBIDDEN_LIVE_QUOTE_ID_PREFIXES = frozenset(
         "15e6b5ad",  # Q10430 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0); Kyle said start over; invent=false 2026-09-16; never remint / PATCH
         "1ddb1b9a",  # Q10431 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0); same class as Q10430; invent=false 2026-09-16; never remint / PATCH
         "bec3c218",  # Q10435 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff blocked; Geometry Cleanup stuck dims 0.0; /CadImport/CADData 404; /part/create never fired; invent=false 2026-09-16; never remint / PATCH
+        "337c3af0",  # Q10603 Kyle-protected — never remint / PATCH
+        "9d8c8bc9",  # Q10634 Transtar CNC bracket Kyle-protected — never remint / PATCH
+        "3fa14f86",  # Lvtong D203 / 2.03.115.100001 Kyle-protected — never remint / PATCH
         "38fa25fc",  # prior burn Q10421→Q10407 drift leftover — full UUID not found in repo/logs/Dropbox; never remint / PATCH that UUID (do not forbid 35146-1 — PN remints remain ALLOWED)
         "d796cdbe",  # Q10407 Safe Cave List=[] leftover — never remint / PATCH
         "09bae33d",  # Q10408 Safe Cave List=[] leftover — never remint / PATCH
@@ -457,6 +464,15 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
         "Q10430",  # spent 15e6b5ad / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0); Kyle said start over; invent=false 2026-09-16; never remint / PATCH (do not forbid H.6.38 — PN remints remain ALLOWED)
         "Q10431",  # spent 1ddb1b9a / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff stuck on Geometry Cleanup spinner (dims 0.0); same class as Q10430; invent=false 2026-09-16; never remint / PATCH (do not forbid H.6.38 — PN remints remain ALLOWED)
         "Q10435",  # spent bec3c218 / Safe Cave H.6.38 leftover stuck Geometry Cleanup — CadImport handoff blocked; Geometry Cleanup stuck dims 0.0; /CadImport/CADData 404; /part/create never fired; invent=false 2026-09-16; never remint / PATCH (do not forbid H.6.38 — PN remints remain ALLOWED)
+        "Q10488",  # Kyle-protected Diamond C — Sectura quote id not in repo; never remint / PATCH / delete
+        "10488",  # Q10488 without the Q prefix
+        "Q10597",  # Kyle-protected — Sectura quote id not in repo; never remint / PATCH / delete
+        "10597",  # Q10597 without the Q prefix
+        "Q10603",  # Kyle-protected 337c3af0 — never remint / PATCH / delete
+        "10603",  # Q10603 without the Q prefix
+        "Q10634",  # Kyle-protected Transtar CNC bracket 9d8c8bc9 — never remint / PATCH / delete
+        "10634",  # Q10634 without the Q prefix
+        "2.03.115.100001",  # Lvtong D203 / 3fa14f86 Kyle-protected — never remint / PATCH / delete
         "Q10470",  # spent H.8.38 remint leftover shell Contours=0 — UUID not found in live-H838-remint-kyle-path.txt / Dropbox / remint logs; description-only; never remint / PATCH; do not invent UUID or Contours (do not forbid H.8.38 — PN remints remain ALLOWED)
         "Q10471",  # spent H.8.38 remint leftover shell Contours=0 — UUID not found in live-H838-remint-kyle-path.txt / Dropbox / remint logs; description-only; never remint / PATCH; do not invent UUID or Contours (do not forbid H.8.38 — PN remints remain ALLOWED)
         "Q10472",  # spent H.8.38 remint leftover shell Contours=0 — UUID not found in live-H838-remint-kyle-path.txt / Dropbox / remint logs; description-only; never remint / PATCH; do not invent UUID or Contours (do not forbid H.8.38 — PN remints remain ALLOWED)
@@ -493,12 +509,30 @@ FORBIDDEN_LIVE_QUOTE_NUMBERS = frozenset(
 )
 
 
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+_UUID_SEARCH_RE = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.IGNORECASE,
+)
+_HEX8_RE = re.compile(r"^[0-9a-f]{8}$")
+_URL_SPLIT_RE = re.compile(r"[/?&#=\s]+")
+
+
+def _id_shaped(raw: str) -> bool:
+    """True for a UUID or a bare 8-hex prefix token, not surrounding prose."""
+    return bool(_UUID_RE.fullmatch(raw) or _HEX8_RE.fullmatch(raw))
+
+
 def is_forbidden_quote_id(quote_id: str | None) -> bool:
     raw = str(quote_id or "").strip().casefold()
     if not raw:
         return False
     if raw in {x.casefold() for x in FORBIDDEN_LIVE_QUOTE_IDS}:
         return True
+    if not _id_shaped(raw):
+        return False
     return any(raw.startswith(p.casefold()) for p in FORBIDDEN_LIVE_QUOTE_ID_PREFIXES)
 
 
@@ -536,34 +570,111 @@ def spent_quote_number_block_reason(
     return None
 
 
+def _forbidden_numbers_re() -> re.Pattern[str]:
+    parts = sorted(
+        (re.escape(number.casefold()) for number in FORBIDDEN_LIVE_QUOTE_NUMBERS),
+        key=len,
+        reverse=True,
+    )
+    return re.compile(
+        r"(?<![a-z0-9.])(" + "|".join(parts) + r")(?![a-z0-9.])",
+        re.IGNORECASE,
+    )
+
+
+_FORBIDDEN_NUMBERS_RE = _forbidden_numbers_re()
+
+
+def _quote_number_hit(text: str) -> str | None:
+    raw = text.strip()
+    if not raw:
+        return None
+    if is_forbidden_quote_number(raw):
+        return raw
+    match = _FORBIDDEN_NUMBERS_RE.search(raw.casefold())
+    if match:
+        return match.group(1)
+    return None
+
+
+def _string_hit(text: str, *, url_tokens: bool) -> str | None:
+    """Forbidden id or quote number in one string.
+
+    A prefix matches only an id-shaped value (UUID or bare 8-hex token),
+    including a UUID embedded in a URL. It does not match prose that merely
+    starts with or contains those characters.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    if is_forbidden_quote_id(raw):
+        return raw
+    for found in _UUID_SEARCH_RE.finditer(raw):
+        token = found.group(0)
+        if is_forbidden_quote_id(token):
+            return token
+    number = _quote_number_hit(raw)
+    if number:
+        return number
+    if not url_tokens:
+        return None
+    for token in _URL_SPLIT_RE.split(raw):
+        piece = token.strip()
+        if not piece or piece == raw:
+            continue
+        if is_forbidden_quote_id(piece) or is_forbidden_quote_number(piece):
+            return piece
+    return None
+
+
+def _walk_hit(obj: Any, *, url_tokens: bool = False, depth: int = 0) -> str | None:
+    if depth > 32 or obj is None:
+        return None
+    if isinstance(obj, str):
+        return _string_hit(obj, url_tokens=url_tokens)
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        return None
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str):
+                hit = _string_hit(key, url_tokens=False)
+                if hit:
+                    return hit
+            hit = _walk_hit(value, depth=depth + 1)
+            if hit:
+                return hit
+        return None
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            hit = _walk_hit(item, depth=depth + 1)
+            if hit:
+                return hit
+        return None
+    return None
+
+
 def refuse_forbidden_quote_write(
     *,
     method: str,
     path: str,
     payload: Any = None,
+    params: Any = None,
 ) -> None:
-    """Raise if a write would PATCH/reuse a forbidden live quote.
+    """Raise if a write would PATCH, remint, or delete a forbidden live quote.
 
-    GET is allowed. New quotes with an unused job PN are allowed. A forbidden
-    QuoteNumber is refused even without ID so create mint cannot stamp kids first.
+    GET, HEAD, and OPTIONS are allowed. POST, PUT, PATCH, DELETE, and multipart
+    are refused when a forbidden quote id, id-shaped prefix, or quote number
+    appears in the URL path, the query string, or anywhere in the body.
+    Keys are not case-sensitive because every nested string is scanned.
     """
     if str(method or "GET").upper() in {"GET", "HEAD", "OPTIONS"}:
         return
-    blob = payload if isinstance(payload, dict) else {}
-    qid = str(blob.get("ID") or blob.get("QuoteID") or "").strip()
-    path_l = str(path or "").casefold()
-    if not qid:
-        for part in path_l.replace("\\", "/").split("/"):
-            if is_forbidden_quote_id(part):
-                qid = part
-                break
-    if is_forbidden_quote_id(qid):
+    hit = _string_hit(str(path or ""), url_tokens=True)
+    if hit is None and params is not None:
+        hit = _walk_hit(params)
+    if hit is None and payload is not None:
+        hit = _walk_hit(payload)
+    if hit:
         raise ForbiddenQuoteError(
-            f"Refusing to PATCH/reuse forbidden live quote {qid}"
-        )
-    qn = str(blob.get("QuoteNumber") or "").strip()
-    if is_forbidden_quote_number(qn):
-        suffix = f" ({qid})" if qid else ""
-        raise ForbiddenQuoteError(
-            f"Refusing to PATCH/reuse forbidden live quote {qn}{suffix}"
+            f"Refusing to PATCH/reuse forbidden live quote {hit}"
         )
